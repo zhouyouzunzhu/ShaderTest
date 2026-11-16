@@ -35,11 +35,7 @@
       <button class="lib-btn" id="btn-library" title="打开效果库（Ctrl+L）">
         <span id="lib-btn-ic"></span><span>效果库</span><span class="lib-btn-count" id="lib-btn-count"></span>
       </button>
-      <div class="tb-sep"></div>
-      <label class="preset-field" title="切换效果库里的效果">
-        <span class="preset-cap">效果</span>
-        <select id="preset-select"></select>
-      </label>
+      <span class="doc-name" id="doc-name" title="当前管线"></span>
     </div>
 
     <div class="tb-right">
@@ -100,7 +96,7 @@
               <span id="res-label">—</span>
             </button>
             <span class="chip static" id="fmt-badge">RGBA8</span>
-            <span class="chip static accent hidden" id="view-badge">查看中间 Pass</span>
+            <span class="chip static accent hidden" id="view-badge">预览</span>
           </div>
           <div class="chip-group">
             <span class="chip static dim" id="preview-note">滚轮缩放 · 中键平移 · 双击适应</span>
@@ -175,6 +171,9 @@
               <input type="checkbox" id="auto-toggle" checked />
               <span class="sw"></span><span>自动编译</span>
             </label>
+            <button class="btn tiny" id="btn-save-pass" title="把这段代码存成常见 Pass 模板（Ctrl+Shift+S）">
+              <span id="save-pass-ic"></span><span>存为 Pass</span>
+            </button>
             <button class="btn tiny primary" id="btn-compile" title="立即编译 (Ctrl/Cmd + Enter)">编译</button>
           </div>
         </div>
@@ -243,18 +242,18 @@
 <div id="modal-root"></div>
 <div id="ctxmenu" class="ctxmenu hidden"></div>
 
-<script src="js/util.js?v=28"></script>
-<script src="js/glsl.js?v=28"></script>
-<script src="js/assets.js?v=28"></script>
-<script src="js/engine.js?v=28"></script>
-<script src="js/editor.js?v=28"></script>
-<script src="js/uniforms.js?v=28"></script>
-<script src="js/pipeline.js?v=28"></script>
-<script src="js/passes.js?v=28"></script>
+<script src="js/util.js?v=33"></script>
+<script src="js/glsl.js?v=33"></script>
+<script src="js/assets.js?v=33"></script>
+<script src="js/engine.js?v=33"></script>
+<script src="js/editor.js?v=33"></script>
+<script src="js/uniforms.js?v=33"></script>
+<script src="js/pipeline.js?v=33"></script>
+<script src="js/passes.js?v=33"></script>
 <!-- 效果库 / 公共图库：由 node tools/lib.mjs build 生成，缺文件时页面照常可用 -->
-<script src="effects/index.js?v=28"></script>
-<script src="library/index.js?v=28"></script>
-<script src="js/store.js?v=28"></script>
-<script src="js/app.js?v=28"></script>
+<script src="effects/index.js?v=33"></script>
+<script src="library/index.js?v=33"></script>
+<script src="js/store.js?v=33"></script>
+<script src="js/app.js?v=33"></script>
 </body>
 </html>

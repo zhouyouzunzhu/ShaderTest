@@ -638,6 +638,87 @@ void main() {
 
   const GROUPS = ['生成', '调色', '模糊', '提取', '合成', '风格化', '扭曲'];
 
+  /* --------------------------- 用户自己存的模板 --------------------------- */
+  /* 存在浏览器本地（localStorage），不写进仓库；「存为 Pass」按钮往里加 */
+
+  const USER_KEY = 'shader-lab:passes';
+
+  function userLoad() {
+    try {
+      const raw = localStorage.getItem(USER_KEY);
+      if (!raw) return [];
+      const arr = JSON.parse(raw);
+      if (!Array.isArray(arr)) return [];
+      return arr.filter(function (t) {
+        return t && typeof t.id === 'string' && typeof t.code === 'string' && t.id;
+      }).map(function (t) {
+        return {
+          id: t.id,
+          name: t.name || t.id,
+          group: t.group || '我的 Pass',
+          role: t.role === 'source' ? 'source' : 'filter',
+          desc: t.desc || '',
+          mine: true,
+          pass: p(t.name || t.id, t.code)
+        };
+      });
+    } catch (e) {
+      return [];
+    }
+  }
+
+  let USERS = userLoad();
+
+  function userPersist() {
+    try {
+      localStorage.setItem(USER_KEY, JSON.stringify(USERS.map(function (t) {
+        return { id: t.id, name: t.name, group: t.group, role: t.role, desc: t.desc, code: t.pass.code };
+      })));
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function userSlug(name) {
+    const base = String(name || '').toLowerCase()
+      .replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '').replace(/-{2,}/g, '-');
+    // 中文名洗不出可用字符，就用时间戳兜底
+    const seed = base || ('p' + Date.now().toString(36).slice(-5));
+    let id = 'my-' + seed;
+    let n = 2;
+    while (SL.passes.has(id)) { id = 'my-' + seed + '-' + n; n++; }
+    return id;
+  }
+
+  /** 把一段代码存成模板；同 id 则覆盖，返回保存后的模板 */
+  function userSave(opt) {
+    const name = String((opt && opt.name) || '').trim() || '未命名 Pass';
+    // 同名视为「更新」：沿用已有 id，避免出现 my-xxx-2、my-xxx-3
+    const same = USERS.filter(function (t) { return t.name === name; })[0];
+    const id = (opt && opt.id) || (same && same.id) || userSlug(name);
+    const tpl = {
+      id: id,
+      name: name,
+      group: (opt && opt.group) || '我的 Pass',
+      role: opt && opt.role === 'source' ? 'source' : 'filter',
+      desc: (opt && opt.desc) || '',
+      mine: true,
+      pass: p(name, (opt && opt.code) || '')
+    };
+    const at = USERS.findIndex(function (t) { return t.id === id; });
+    if (at >= 0) USERS[at] = tpl; else USERS.push(tpl);
+    if (!userPersist()) SL.ui.toast('存不进浏览器本地（可能是隐私模式）', 'bad');
+    return tpl;
+  }
+
+  function userRemove(id) {
+    const at = USERS.findIndex(function (t) { return t.id === id; });
+    if (at < 0) return false;
+    USERS.splice(at, 1);
+    return userPersist();
+  }
+
   /** 默认新文档：一个「基础调色」Pass，采样输入图 */
   function defaultDoc() {
     return {
@@ -650,10 +731,19 @@ void main() {
   SL.passes = {
     list: LIST,
     groups: GROUPS,
+    /** 内置 + 用户自定义（用户在前，方便找） */
+    all: function () { return USERS.concat(LIST); },
     ids: LIST.map(function (t) { return t.id; }),
-    has: function (id) { return LIST.some(function (t) { return t.id === id; }); },
-    get: function (id) { return LIST.filter(function (t) { return t.id === id; })[0] || null; },
+    has: function (id) { return USERS.some(function (t) { return t.id === id; }) || LIST.some(function (t) { return t.id === id; }); },
+    get: function (id) {
+      return USERS.filter(function (t) { return t.id === id; })[0]
+        || LIST.filter(function (t) { return t.id === id; })[0] || null;
+    },
     byGroup: function (group) { return LIST.filter(function (t) { return t.group === group; }); },
+    /** 用户自己存的模板 */
+    mine: function () { return USERS.slice(); },
+    save: userSave,
+    remove: userRemove,
     /** 生成可插入的 pass 列表（一模板一 Pass；不带 id，由调用方分配） */
     build: function (id) {
       const t = SL.passes.get(id);

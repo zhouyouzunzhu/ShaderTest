@@ -86,7 +86,7 @@ window.SL = window.SL || {};
       const eye = SL.h('button', {
         class: 'ibtn pass-eye',
         title: pass.enabled === false ? '已停用 — 点击启用' : '启用中 — 点击停用',
-        html: SL.icon(pass.enabled === false ? 'eyeOff' : 'eye', 14)
+        html: SL.icon(pass.enabled === false ? 'eyeOff' : 'eye', 16)
       });
       eye.addEventListener('click', function (e) {
         e.stopPropagation();

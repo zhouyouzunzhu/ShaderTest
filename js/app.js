@@ -148,7 +148,8 @@ window.SL = window.SL || {};
     Object.keys(map).forEach(function (id) {
       const el = $('#' + id);
       if (!el || !map[id]) return;
-      el.innerHTML = SL.icon(map[id], 15);
+      // 播放控制那排小按钮用 16，其余 15，整体比之前大一号
+      el.innerHTML = SL.icon(map[id], id.indexOf('tl-') === 0 ? 17 : 16);
     });
     const add2 = $('#btn-add-pass-2');
     if (add2) add2.innerHTML = '<span class="plus">+</span><span>插入 Pass</span>';
@@ -160,6 +161,8 @@ window.SL = window.SL || {};
     if (cmp) cmp.innerHTML = SL.icon('split', 12);
     const libIc = $('#lib-btn-ic');
     if (libIc) libIc.innerHTML = SL.icon('grid', 13);
+    const savePassIc = $('#save-pass-ic');
+    if (savePassIc) savePassIc.innerHTML = SL.icon('save', 12);
     const bgIc = $('#bg-ic');
     if (bgIc) bgIc.innerHTML = SL.icon('image', 12);
     const libIco = $('#lib-ico');
@@ -183,36 +186,28 @@ window.SL = window.SL || {};
   }
 
   function fillPresetSelect() {
-    const sel = $('#preset-select');
-    sel.innerHTML = '';
     const effects = libraryEffects();
-    sel.appendChild(SL.h('option', { value: '', text: '（当前管线）', disabled: true }));
-    if (effects.length) {
-      const g = SL.h('optgroup', { label: '效果库' });
-      effects.forEach(function (e) {
-        g.appendChild(SL.h('option', { value: 'effect:' + e.id, text: e.name, title: e.desc }));
-      });
-      sel.appendChild(g);
-    } else {
-      sel.appendChild(SL.h('option', { value: '__empty', text: '（效果库为空）', disabled: true }));
-    }
-    sel.appendChild(SL.h('option', { value: '__new', text: '＋ 新建效果…', title: '从「背景 + 效果」两个 Pass 起步' }));
     const cnt = $('#lib-btn-count');
     if (cnt) cnt.textContent = effects.length ? String(effects.length) : '';
   }
 
-  /** 当前文档指向的效果还没落盘（不在 index 里）时，给下拉补一个临时项 */
-  function ensurePresetOption(doc) {
-    const sel = $('#preset-select');
-    if (!doc || !doc.presetId) return;
-    if (Array.prototype.some.call(sel.options, function (o) { return o.value === doc.presetId; })) return;
-    const op = SL.h('option', {
-      value: doc.presetId,
-      text: '（未落盘）' + (doc.effectName || (doc.effectId || doc.presetId))
-    });
-    // 放在「新建效果…」之前
-    const last = sel.lastElementChild;
-    if (last) sel.insertBefore(op, last); else sel.appendChild(op);
+  /** 顶栏的效果名（只读）：指到哪个效果 / 未落盘 / 当前管线 */
+  function syncDocName() {
+    const el = $('#doc-name');
+    if (!el || !App.doc) return;
+    const doc = App.doc;
+    const eff = doc.effectId
+      ? libraryEffects().filter(function (e) { return e.id === doc.effectId; })[0] : null;
+    let name = '';
+    if (eff) name = eff.name;
+    else if (doc.effectName) name = doc.effectName;
+    else if (doc.effectId) name = '（未落盘）' + doc.effectId;
+    el.textContent = name;
+    el.classList.toggle('hidden', !name);
+    const title = eff
+      ? (eff.name + (eff.desc ? ' · ' + eff.desc : '') + (doc.effectId ? '\n' + doc.effectId : ''))
+      : (name || '当前管线');
+    el.title = title + (doc.custom ? '\n（已修改）' : '');
   }
 
   /** 效果库索引（effects/index.js 由 node tools/lib.mjs build 生成） */
@@ -250,8 +245,6 @@ window.SL = window.SL || {};
         const fEl = $('#font-size');
         if (fEl) fEl.textContent = String(size);
       }
-      ensurePresetOption(doc);
-      $('#preset-select').value = doc.presetId;
       $('#auto-toggle').checked = true;
       applyPreviewBg();
       syncScrub();
@@ -297,11 +290,7 @@ window.SL = window.SL || {};
   }
 
   function updateDocBadge() {
-    const sel = $('#preset-select');
-    const eff = App.doc.effectId
-      ? libraryEffects().filter(function (e) { return e.id === App.doc.effectId; })[0] : null;
-    const title = eff ? (eff.name + ' · ' + (eff.desc || '')) : (App.doc.effectName || '');
-    sel.title = (title || '当前管线') + (App.doc.custom ? '（已修改）' : '');
+    syncDocName();
     $('#pipeline-meta').textContent = SL.pipeline.metaText(App.doc.passes);
   }
 
@@ -319,6 +308,17 @@ window.SL = window.SL || {};
       if (App.doc.passes[i].id === App.doc.selectedPassId) return App.doc.passes[i];
     }
     return App.doc.passes[0] || null;
+  }
+
+  /** 管线真正出图的那一步：最后一个启用、且不是中间态的 Pass */
+  function outputPass() {
+    if (!App.doc) return null;
+    let last = null;
+    App.doc.passes.forEach(function (p) {
+      if (p.enabled === false || p.role === 'source') return;
+      last = p;
+    });
+    return last;
   }
 
   /* ========================================================================
@@ -951,7 +951,8 @@ window.SL = window.SL || {};
       passes: App.doc.passes,
       time: App.time,
       mouse: App.mouse,
-      viewPassId: App.doc.viewPassId,
+      // 预览跟着选中的 Pass 走：看到的就是这一阶段的输出（中间态显示它生成的图）
+      viewPassId: App.viewPin || App.doc.selectedPassId || null,
       compare: App.compare,
       // 一次性效果的时间轴：u_t01 是 0→1 的归一化进度
       t01: dur > 0 ? SL.clamp(App.time / dur, 0, 1) : 0,
@@ -1063,13 +1064,18 @@ window.SL = window.SL || {};
       ? (App.engine.caps.hdr ? '至少一个 Pass 使用 RGBA16F 浮点缓冲' : '有 Pass 要求 HDR，但当前设备不支持 EXT_color_buffer_float，已退回 RGBA8')
       : '全部 Pass 使用 RGBA8 缓冲';
     const vb = $('#view-badge');
-    if (App.doc.viewPassId) {
-      vb.classList.remove('hidden');
-      const p = App.doc.passes.filter(function (x) { return x.id === App.doc.viewPassId; })[0];
-      vb.textContent = '查看：' + (p ? p.name : '中间 Pass') + ' ✕';
-    } else {
+    const sel = selectedPass();
+    const fin = outputPass();
+    if (!App.doc.passes.length) {
       vb.classList.add('hidden');
+      return;
     }
+    vb.classList.remove('hidden');
+    const atFinal = !sel || !fin || sel.id === fin.id;
+    vb.textContent = atFinal ? '整条管线' : ('预览 · ' + sel.name + (sel.role === 'source' ? '（中间态）' : ''));
+    vb.title = atFinal
+      ? '正在显示整条管线最后一步的结果'
+      : ('正在显示「' + sel.name + '」这一阶段的输出；点一下回到整条管线');
   }
 
   function updateStats(ms, gpu) {
@@ -1241,10 +1247,7 @@ window.SL = window.SL || {};
     }
     const ask = skipConfirm ? Promise.resolve(true) : confirmDiscard();
     return ask.then(function (ok) {
-      if (!ok) {
-        $('#preset-select').value = App.doc.presetId;
-        return false;
-      }
+      if (!ok) return false;
       return buildDocFromEffect(eff).then(function (doc) {
         const next = SL.store.normalize(doc, { allowNewEffect: true });
         next.ui.playing = true;
@@ -1255,7 +1258,6 @@ window.SL = window.SL || {};
         App.playing = true;
         syncPlayButton();
         syncScrub();
-        $('#preset-select').value = next.presetId;
         const kb = eff.tags && eff.tags.length ? ' · ' + eff.tags.join(' / ') : '';
         SL.ui.toast(eff.name + kb + (eff.desc ? '\n' + eff.desc : ''), 'info');
         SL.store.save(next);
@@ -1412,13 +1414,6 @@ window.SL = window.SL || {};
       App.playing = true;
       syncPlayButton();
       syncTimeline();
-      $('#preset-select').value = next.presetId;
-      if ($('#preset-select').value !== next.presetId) {
-        // 新效果还不在 index 里，先塞一个临时 option，免得选择框跳回默认预设
-        const op = SL.h('option', { value: next.presetId, text: '（未落盘）' + (name || id) });
-        $('#preset-select').appendChild(op);
-        $('#preset-select').value = next.presetId;
-      }
       m.close();
       SL.store.save(next);
       offerEffectExport(id, name || id);
@@ -1906,10 +1901,10 @@ window.SL = window.SL || {};
     });
 
     $('#view-badge').addEventListener('click', function () {
-      App.doc.viewPassId = null;
+      const fin = outputPass();
+      if (!fin) return;
+      selectPass(fin.id);
       App.needsRender = true;
-      renderPipeline();
-      syncResolutionLabel();
     });
 
     // 对比原图 / 专注模式
@@ -2121,6 +2116,10 @@ window.SL = window.SL || {};
       e.stopPropagation();
       openSnippets($('#btn-snippets'));
     });
+    $('#btn-save-pass').addEventListener('click', function (e) {
+      e.stopPropagation();
+      openSavePass();
+    });
     $('#auto-toggle').addEventListener('change', function (e) {
       App.autoCompile = e.target.checked;
       if (App.autoCompile) recompile();
@@ -2325,12 +2324,6 @@ window.SL = window.SL || {};
     function label(text) { menu.appendChild(SL.h('div', { class: 'ctxmenu-label', text: text })); }
 
     label(pass.name + (pass.enabled === false ? '（已停用）' : ''));
-    item((App.doc.viewPassId === pass.id ? '◉ ' : '') + '查看此 Pass 输出', function () {
-      App.doc.viewPassId = pass.id;
-      App.needsRender = true;
-      renderPipeline();
-      syncResolutionLabel();
-    });
     item(pass.enabled === false ? '启用此 Pass' : '停用此 Pass', function () {
       togglePass(pass);
     }, false, 'Ctrl+E');
@@ -2425,6 +2418,7 @@ window.SL = window.SL || {};
       App.doc.selectedPassId = next ? next.id : null;
     }
     if (App.doc.viewPassId === pass.id) App.doc.viewPassId = null;
+    if (App.viewPin === pass.id) App.viewPin = null;
     compileAll();
     selectPass(App.doc.selectedPassId, true);
     renderPipeline();
@@ -2444,11 +2438,11 @@ window.SL = window.SL || {};
     });
   }
 
-  /** 把这个 Pass 的输出单独存成 PNG（临时切到该 Pass 看一眼，再读画布） */
+  /** 把这个 Pass 的输出单独存成 PNG（临时固定到该 Pass 看一眼，再读画布） */
   function exportPassImage(pass) {
-    const prevView = App.doc.viewPassId;
+    const prevPin = App.viewPin;
     const wasPlaying = App.playing;
-    App.doc.viewPassId = pass.id;
+    App.viewPin = pass.id;
     App.playing = false;
     try {
       renderFrame(0);
@@ -2461,15 +2455,15 @@ window.SL = window.SL || {};
         SL.ui.toast('导出失败：' + (e && e.message || e), 'bad');
       });
     } finally {
-      App.doc.viewPassId = prevView;
+      App.viewPin = prevPin;
       App.playing = wasPlaying;
       App.needsRender = true;
-      renderPipeline();
       syncResolutionLabel();
     }
   }
 
-  function duplicatePass(pass) {    const copy = SL.deepClone(pass);
+  function duplicatePass(pass) {
+    const copy = SL.deepClone(pass);
     copy.id = nextPassId();
     copy.name = pass.name + ' 副本';
     const i = App.doc.passes.indexOf(pass);
@@ -2544,10 +2538,16 @@ window.SL = window.SL || {};
     if (passPicker) return;
     let box;
 
-    const LABELS = { '': '空白' };
+    const LABELS = { '': '空白', '我的 Pass': '我的 Pass' };
     SL.passes.groups.forEach(function (g) { LABELS[g] = g; });
 
     const entries = [{ id: '', name: '空白 Pass', group: '', role: 'blank', desc: '一张白纸，自己写' }]
+      .concat(SL.passes.mine().map(function (t) {
+        return {
+          id: t.id, name: t.name, group: '我的 Pass', role: t.role || 'filter',
+          desc: t.desc || '自己存的模板', code: t.pass && t.pass.code, mine: true
+        };
+      }))
       .concat(SL.passes.list.map(function (t) {
         return {
           id: t.id, name: t.name, group: t.group, role: t.role || 'filter',
@@ -2556,9 +2556,9 @@ window.SL = window.SL || {};
       }));
 
     /* 分组芯片：点一下只看这一类，再点「全部」回来 */
-    const chipDefs = [{ key: '', label: '全部' }].concat(SL.passes.groups.map(function (g) {
-      return { key: g, label: g };
-    }));
+    const chipDefs = [{ key: '', label: '全部' }];
+    if (SL.passes.mine().length) chipDefs.push({ key: '我的 Pass', label: '我的' });
+    SL.passes.groups.forEach(function (g) { chipDefs.push({ key: g, label: g }); });
     let curGroup = '';
 
     function roleTag(e) {
@@ -2639,7 +2639,7 @@ window.SL = window.SL || {};
           lastGroup = e.group;
           listEl.appendChild(SL.h('div', { class: 'pp-group', text: LABELS[e.group] || e.group || '其它' }));
         }
-        const row = SL.h('div', { class: 'pp-item' + (i === sel ? ' active' : ''), html: rowHtml(e) });
+        const row = SL.h('div', { class: 'pp-item' + (i === sel ? ' active' : '') + (e.mine ? ' mine' : ''), html: rowHtml(e) });
         row.addEventListener('click', function () { pick(i); });
         row.addEventListener('mouseenter', function () {
           sel = i;
@@ -2647,6 +2647,26 @@ window.SL = window.SL || {};
             x.classList.toggle('active', k === i);
           });
         });
+        if (e.mine) {
+          const del = SL.h('button', { class: 'pp-del', title: '删除这个自定义 Pass', html: SL.icon('trash', 12) });
+          del.addEventListener('click', function (ev) {
+            ev.stopPropagation();
+            SL.ui.confirm({
+              title: '删除自定义 Pass',
+              message: '从「我的 Pass」里删掉「' + e.name + '」？',
+              detail: '只会删掉模板，已经插进管线的 Pass 不受影响。',
+              okLabel: '删除', danger: true
+            }).then(function (ok) {
+              if (!ok) return;
+              SL.passes.remove(e.id);
+              SL.ui.toast('已删除「' + e.name + '」', 'ok');
+              // 确认框弹出时选择器可能已被覆盖层关掉，这里统一重开
+              if (passPicker) passPicker.close();
+              openPassPicker();
+            });
+          });
+          row.appendChild(del);
+        }
         listEl.appendChild(row);
       });
     }
@@ -2682,9 +2702,61 @@ window.SL = window.SL || {};
     setTimeout(function () { input.focus(); }, 30);
   }
 
+  /** 把编辑器里的代码存成可复用的 Pass 模板（放在浏览器本地） */
+  function openSavePass() {
+    const pass = selectedPass();
+    if (!pass) return;
+    const code = App.editor ? App.editor.getValue() : pass.code;
+    if (!code.trim()) { SL.ui.toast('这段代码是空的', 'info'); return; }
+
+    // 不读 u_tex 就是中间态（生成器），读就是叠加态
+    const dry = code.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+    const looksSource = !/\bu_tex\b/.test(dry);
+
+    const field = function (label, el) {
+      const wrap = SL.h('div', { class: 'ef-row' });
+      wrap.appendChild(SL.h('label', { text: label }));
+      wrap.appendChild(el);
+      return wrap;
+    };
+
+    const nameIn = SL.h('input', { class: 'inp', type: 'text', value: pass.name || '', maxlength: '24', placeholder: '例如：扫描光' });
+    const roleSel = SL.h('select', { class: 'inp' });
+    roleSel.appendChild(SL.h('option', { value: 'filter', text: '叠加态 · 读上一 Pass 的输出' }));
+    roleSel.appendChild(SL.h('option', { value: 'source', text: '中间态 · 自己生成图，供别的 Pass 采样' }));
+    roleSel.value = looksSource ? 'source' : 'filter';
+    const descIn = SL.h('input', { class: 'inp', type: 'text', maxlength: '60', placeholder: '一句话：干什么用的（会显示在选择器里）' });
+
+    const body = SL.h('div', { style: 'display:grid;gap:11px;min-width:420px' });
+    body.appendChild(field('名称', nameIn));
+    body.appendChild(field('角色', roleSel));
+    body.appendChild(field('说明', descIn));
+    body.appendChild(SL.h('div', {
+      class: 'sp-note',
+      html: '存进浏览器的「我的 Pass」，以后在<b>插入 Pass → 我的</b>里就能找到；同名再存一次会覆盖。只存模板，不动当前管线。'
+    }));
+
+    const cancel = SL.h('button', { class: 'btn', text: '取消' });
+    const ok = SL.h('button', { class: 'btn primary', text: '保存' });
+    const m = SL.ui.modal({ title: '存为 Pass 模板', icon: 'save', body: body, footer: [SL.h('span', { class: 'grow' }), cancel, ok] });
+    cancel.addEventListener('click', m.close);
+    ok.addEventListener('click', function () {
+      const name = (nameIn.value || '').trim();
+      if (!name) { SL.ui.toast('给它起个名字', 'info'); nameIn.focus(); return; }
+      const tpl = SL.passes.save({
+        name: name,
+        role: roleSel.value,
+        desc: (descIn.value || '').trim(),
+        code: code
+      });
+      m.close();
+      SL.ui.toast('已存进「我的 Pass」：' + tpl.name, 'ok');
+    });
+    setTimeout(function () { nameIn.focus(); if (nameIn.select) nameIn.select(); }, 40);
+  }
+
   /** 空白 Pass 走原来的模板 */
-  function insertBlankPass() {
-    const cur = selectedPass();
+  function insertBlankPass() {    const cur = selectedPass();
     const pass = {
       id: nextPassId(),
       name: 'Pass ' + (App.doc.passes.length + 1),
@@ -2715,6 +2787,8 @@ window.SL = window.SL || {};
     if (!pass) pass = App.doc.passes[0];
     if (!pass) return;
     App.doc.selectedPassId = pass.id;
+    // 预览跟着选中走：选哪个 Pass 就看它这一阶段的画面
+    App.needsRender = true;
     recompile.cancel();
 
     if (App.editor) {
@@ -2723,6 +2797,7 @@ window.SL = window.SL || {};
     if (!App.compiled[pass.id]) compilePass(pass);
     syncEditorChrome();
     renderInspector();
+    syncResolutionLabel();
     if (!silent) {
       renderPipeline();
       // 让选中的 Pass 在左栏可见（Pass 多了以后键盘切换全靠这个）
@@ -3123,16 +3198,6 @@ window.SL = window.SL || {};
      十、顶栏动作
      ====================================================================== */
   function bindTopbar() {
-    $('#preset-select').addEventListener('change', function (e) {
-      const v = e.target.value;
-      if (v === '__new') {
-        e.target.value = App.doc.presetId || '';
-        openNewEffect();
-        return;
-      }
-      if (v.indexOf('effect:') === 0) loadEffect(v.slice(7));
-    });
-
     $('#btn-library').addEventListener('click', openLibrary);
     $('#btn-new-effect').addEventListener('click', function () {
       if (libraryOpen()) closeLibrary();
@@ -3294,6 +3359,11 @@ window.SL = window.SL || {};
         return;
       }
       // 全局：编译 / 导出 / 字号 / 跳行
+      if (mod && e.shiftKey && (e.key === 's' || e.key === 'S')) {
+        e.preventDefault();
+        openSavePass();
+        return;
+      }
       if (mod && e.key === 'Enter') { e.preventDefault(); compileNow(); return; }
       if (mod && (e.key === 's' || e.key === 'S')) {
         e.preventDefault();
@@ -3341,6 +3411,12 @@ window.SL = window.SL || {};
           App.zoom = 1; App.panX = 0; App.panY = 0; applyTransform(); break;
         case 'b': case 'B':
           e.preventDefault(); setCompare(!App.compare); break;
+        case 'v': case 'V': {
+          e.preventDefault();
+          const fin = outputPass();
+          if (fin) { selectPass(fin.id); App.needsRender = true; }
+          break;
+        }
         case 'z': case 'Z':
           e.preventDefault(); setZen(!App.zen); break;
         case 'Escape':
@@ -3535,9 +3611,10 @@ window.SL = window.SL || {};
     add('操作', '导入图片…', '', 'image', function () { pickImages(); });
     add('操作', '快捷键与说明', '?', 'keyboard', openHelp);
     add('操作', '跳到行…', 'Ctrl+G', 'code', promptGoto);
-    if (App.doc && App.doc.viewPassId) {
-      add('操作', '清除中间 Pass 查看', '', 'eye', function () {
-        App.doc.viewPassId = null; App.needsRender = true; renderPipeline(); syncResolutionLabel();
+    if (App.doc && selectedPass() && outputPass() && App.doc.selectedPassId !== outputPass().id) {
+      add('操作', '回到整条管线', 'V', 'eye', function () {
+        const fin = outputPass();
+        if (fin) { selectPass(fin.id); App.needsRender = true; }
       });
     }
 
@@ -3703,7 +3780,7 @@ window.SL = window.SL || {};
     body.innerHTML = [
       '<h3>三步上手</h3>',
       '<ol>',
-      '<li>左上「效果」切一个效果库里的例子；想从零开始就按 <kbd>N</kbd> 挑一个常见 Pass。</li>',
+      '<li>左上「效果库」里挑一个例子（<kbd>Ctrl</kbd>+<kbd>L</kbd>）；想从零开始就按 <kbd>N</kbd> 挑一个常见 Pass。</li>',
       '<li>下方编辑器改 shader，改完自动重新编译（也可 <kbd>Ctrl</kbd>+<kbd>↵</kbd> 立即编译）。</li>',
       '<li>右侧「Uniforms」调参数、「纹理」换输入图；左栏按 <kbd>N</kbd> 插入调色 / 模糊 / 泛光等现成 Pass。</li>',
       '<li>要做动画：在这个参数名后面点 <code>◇</code> 打一帧，拖时间轴再改值就会自动补帧。</li>',
@@ -3760,7 +3837,7 @@ window.SL = window.SL || {};
       '<h3>公共图库与新建效果</h3>',
       '<p>素材图放到 <code>library/</code>（png / jpg / webp），跑一次 <code>node tools/lib.mjs build</code> 就会出现在「纹理」页的「公共图库」里，' +
       '可以直接当输入图或背景图用；效果包的 <code>inputs</code> 里写 <code>"library:文件名"</code> 也能引用它。</p>',
-      '<p>新建效果：效果库面板右上角「＋ 新建效果」、效果下拉最后一项、或命令面板里搜「新建效果」。' +
+      '<p>新建效果：效果库面板右上角「＋ 新建效果」，或在命令面板里搜「新建效果」。' +
       '会得到两个 Pass——<b>p1 背景</b>（铺底图）和 <b>p2 效果</b>（在上一个 Pass 上做效果）；时长不在这里填，' +
       '创建后到时间轴上直接改（0 = 无限时间）再打关键帧。' +
       '做完点「导出效果包 JSON」下载，然后 <code>node tools/lib.mjs import 文件名.effect.json</code> + <code>build</code> 就进库了。</p>',
@@ -3773,6 +3850,14 @@ window.SL = window.SL || {};
       '<h3>播放与时长</h3>',
       '<p>播放 / 单帧 / 单帧后退 / 归零都在时间轴左边；「时长」输入框直接改这个管线的时长：' +
       '<code>0</code> 表示无限时间（u_time 一直涨），大于 0 时时间按它循环，并且可以给参数打关键帧。</p>',
+      '<h3>预览与选中</h3>',
+      '<p>预览默认跟着「当前选中的 Pass」走：点左栏哪个 Pass，画面上就是<b>跑到那一步为止</b>的结果，' +
+      '所以点一个中间态（噪声 / FBM…）能直接看到它生成的纹理。' +
+      '选中最后一步时预览的是整条管线（左上角显示「整条管线」）；点这个标签或按 <kbd>V</kbd> 随时跳回最后一步。</p>',
+      '<h3>把代码存成 Pass</h3>',
+      '<p>编辑器右上角「存为 Pass」（或 <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>S</kbd>）能把当前这段 shader 存进「我的 Pass」：' +
+      '填个名字，选「叠加态 / 中间态」，之后按 <kbd>N</kbd> 在选择器顶部的「我的」芯片里就能找到，插进来就是普通 Pass。' +
+      '同名再存一次是更新；在选择器里把鼠标移到「我的」条目上，右边的垃圾桶可以删。</p>',
       '<h3>快捷键</h3>',
       '<table class="keys-grid">',
       '<tr><td><kbd>Ctrl</kbd>+<kbd>K</kbd></td><td>命令面板：搜命令 / Pass 模板 / 效果 / 贴图</td></tr>',
@@ -3785,6 +3870,8 @@ window.SL = window.SL || {};
       '<tr><td><kbd>Z</kbd></td><td>专注模式（只留预览，<kbd>Esc</kbd> 退出）</td></tr>',
       '<tr><td><kbd>[</kbd> <kbd>]</kbd></td><td>上一个 / 下一个 Pass</td></tr>',
       '<tr><td><kbd>N</kbd> / <kbd>Shift</kbd>+<kbd>N</kbd></td><td>插入常见 Pass / 插入空白 Pass</td></tr>',
+      '<tr><td><kbd>V</kbd></td><td>跳回最后一步（预览整条管线）</td></tr>',
+      '<tr><td><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>S</kbd></td><td>把当前 shader 存成 Pass 模板</td></tr>',
       '<tr><td><kbd>Ctrl</kbd>+<kbd>D</kbd></td><td>复制当前 Pass</td></tr>',
       '<tr><td><kbd>K</kbd></td><td>当前时刻给这个 Pass 的所有轨道打帧</td></tr>',
       '<tr><td><kbd>Ctrl</kbd>+<kbd>E</kbd> / <kbd>Del</kbd></td><td>启用或停用 / 删除当前 Pass</td></tr>',
@@ -3846,7 +3933,7 @@ window.SL = window.SL || {};
       syncStage();
       syncScrub();
       App.needsRender = true;
-      $('#preset-select').value = '';
+      updateDocBadge();
       return App.doc.passes.map(function (p) {
         const r = App.compiled[p.id];
         return { name: p.name, ok: r.ok, errors: (r.errors || []).map(function (e) { return e.line + ': ' + e.message; }) };

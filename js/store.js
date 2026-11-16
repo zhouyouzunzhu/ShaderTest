@@ -295,11 +295,18 @@ window.SL = window.SL || {};
 
   /* ------------------------------ 读写 ------------------------------ */
   function load() {
-    return idbGet(DB_KEY).then(function (doc) {
-      if (doc) return normalize(doc);
-      return loadLS();
-    }).catch(function () {
-      return loadLS();
+    // 有本地服务时以 project.json 为准（它才是仓库里能看到的那份）
+    const fromServer = (SL.server && SL.server.on)
+      ? SL.server.getDoc().then(function (doc) { return doc ? normalize(doc) : null; }).catch(function () { return null; })
+      : Promise.resolve(null);
+    return fromServer.then(function (doc) {
+      if (doc) return doc;
+      return idbGet(DB_KEY).then(function (idbDoc) {
+        if (idbDoc) return normalize(idbDoc);
+        return loadLS();
+      }).catch(function () {
+        return loadLS();
+      });
     });
   }
 
@@ -327,6 +334,17 @@ window.SL = window.SL || {};
           throw err;
         }
       });
+    }).then(function (where) {
+      // 有本地服务时再写一份到 project.json（可见、可提交、能 review）
+      if (SL.server && SL.server.on) {
+        SL.server.putDoc(doc).catch(function (err) {
+          if (SL.ui && SL.ui.toast && SL.__lastDocError !== String(err && err.message)) {
+            SL.__lastDocError = String(err && err.message);
+            SL.ui.toast('写不进 project.json：' + (err && err.message ? err.message : err), 'warn');
+          }
+        });
+      }
+      return where;
     }).catch(function (err) {
       if (SL.__lastSaveError !== String(err && err.message)) {
         SL.__lastSaveError = String(err && err.message);

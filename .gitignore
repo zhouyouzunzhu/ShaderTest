@@ -1,0 +1,7 @@
+# 依赖
+node_modules/
+
+# 本地服务的会话状态：自动保存的当前工程（用「导出工程 JSON」分享）
+project.json
+project.json.tmp-*
+*.tmp-*

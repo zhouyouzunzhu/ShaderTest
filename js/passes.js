@@ -669,6 +669,48 @@ void main() {
 
   let USERS = userLoad();
 
+  /** 服务端（passes/*.mjs）返回的列表 → 内部模板结构 */
+  function fromServer(rec) {
+    return {
+      id: rec.id,
+      name: rec.name || rec.id,
+      group: rec.group || '我的 Pass',
+      role: rec.role === 'source' ? 'source' : 'filter',
+      desc: rec.desc || '',
+      mine: true,
+      pass: p(rec.name || rec.id, rec.code || '')
+    };
+  }
+
+  /** 有本地服务时，用 passes/ 目录里的文件覆盖浏览器缓存 */
+  function syncFromServer() {
+    if (!SL.server || !SL.server.on) return Promise.resolve(false);
+    return SL.server.listPasses().then(function (list) {
+      USERS = list.map(fromServer);
+      return true;
+    }).catch(function () { return false; });
+  }
+
+  function serverPut(tpl) {
+    if (!SL.server || !SL.server.on) return;
+    SL.server.putPass(tpl.id, {
+      name: tpl.name,
+      group: tpl.group,
+      role: tpl.role,
+      desc: tpl.desc,
+      code: tpl.pass.code
+    }).catch(function (err) {
+      SL.ui.toast('写不进 passes/：' + (err && err.message ? err.message : err), 'bad');
+    });
+  }
+
+  function serverDel(id) {
+    if (!SL.server || !SL.server.on) return;
+    SL.server.delPass(id).catch(function (err) {
+      SL.ui.toast('删不掉 passes/ 里的文件：' + (err && err.message ? err.message : err), 'bad');
+    });
+  }
+
   function userPersist() {
     try {
       localStorage.setItem(USER_KEY, JSON.stringify(USERS.map(function (t) {
@@ -708,7 +750,11 @@ void main() {
     };
     const at = USERS.findIndex(function (t) { return t.id === id; });
     if (at >= 0) USERS[at] = tpl; else USERS.push(tpl);
-    if (!userPersist()) SL.ui.toast('存不进浏览器本地（可能是隐私模式）', 'bad');
+    if (SL.server && SL.server.on) {
+      serverPut(tpl);
+    } else if (!userPersist()) {
+      SL.ui.toast('存不进浏览器本地（可能是隐私模式）', 'bad');
+    }
     return tpl;
   }
 
@@ -716,6 +762,10 @@ void main() {
     const at = USERS.findIndex(function (t) { return t.id === id; });
     if (at < 0) return false;
     USERS.splice(at, 1);
+    if (SL.server && SL.server.on) {
+      serverDel(id);
+      return true;
+    }
     return userPersist();
   }
 
@@ -744,6 +794,8 @@ void main() {
     mine: function () { return USERS.slice(); },
     save: userSave,
     remove: userRemove,
+    /** 有本地服务时，从 passes/ 目录重新载入（返回 Promise<bool>） */
+    sync: syncFromServer,
     /** 生成可插入的 pass 列表（一模板一 Pass；不带 id，由调用方分配） */
     build: function (id) {
       const t = SL.passes.get(id);

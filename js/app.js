@@ -89,7 +89,13 @@ window.SL = window.SL || {};
       } catch (e) { /* store 内部已提示 */ }
     }, 700);
 
-    SL.store.load().then(function (doc) {
+    // 先探本地服务：有的话 passes/ 与 project.json 都以磁盘为准
+    SL.server.init().then(function () {
+      syncStoreMode();
+      return SL.passes.sync();
+    }).then(function () {
+      return SL.store.load();
+    }).then(function (doc) {
       App.__fresh = !doc;
       applyDoc(doc || SL.store.defaultState());
       bootDone();
@@ -208,6 +214,25 @@ window.SL = window.SL || {};
       ? (eff.name + (eff.desc ? ' · ' + eff.desc : '') + (doc.effectId ? '\n' + doc.effectId : ''))
       : (name || '当前管线');
     el.title = title + (doc.custom ? '\n（已修改）' : '');
+  }
+
+  /** 保存位置提示：磁盘（本地服务）还是浏览器本地 */
+  function syncStoreMode() {
+    const el = $('#store-mode');
+    const st = $('#save-state');
+    const disk = !!(SL.server && SL.server.on);
+    if (el) {
+      el.textContent = disk ? '磁盘' : '浏览器';
+      el.classList.toggle('disk', disk);
+      el.title = disk
+        ? '保存到项目目录：passes/*.mjs 与 project.json（node server/index.mjs）'
+        : '没有启动本地服务，改动只存在浏览器里；想落盘就跑 node server/index.mjs';
+    }
+    if (st) {
+      st.title = disk
+        ? '改动会自动存进 project.json（本地服务）'
+        : '改动只存进浏览器本地（启动本地服务后可落盘）';
+    }
   }
 
   /** 效果库索引（effects/index.js 由 node tools/lib.mjs build 生成） */

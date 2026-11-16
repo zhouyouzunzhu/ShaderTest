@@ -1,0 +1,13 @@
+{
+  "name": "shaderlab",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "ShaderLab · GLSL 着色器测试台（本地服务版：passes / library / effects / project.json 直接落盘）",
+  "scripts": {
+    "serve": "node server/index.mjs",
+    "editor": "node server/index.mjs --open",
+    "check": "node tools/lib.mjs check",
+    "build": "node tools/lib.mjs build"
+  }
+}

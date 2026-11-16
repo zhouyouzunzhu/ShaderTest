@@ -92,7 +92,11 @@ window.SL = window.SL || {};
     // 先探本地服务：有的话 passes/ library/ effects/ project.json 都以磁盘为准
     SL.server.init().then(function () {
       syncStoreMode();
-      return Promise.all([SL.passes.sync(), reloadEffectIndex()]);
+      // 单个库读失败不该拖垮整个启动：各自降级
+      return Promise.all([
+        SL.passes.sync().catch(function () { return false; }),
+        reloadEffectIndex().catch(function () { return null; })
+      ]);
     }).then(function () {
       // 服务模式下 library/ 的真实内容要等探测完才读得到，这里补一次
       return App.assets.ensureLibrary(function () {
@@ -153,11 +157,15 @@ window.SL = window.SL || {};
           buildLibraryThumbs();
         }
         SL.ui.toast('effect.json / shader 变了，效果库已重载', 'info');
+      }).catch(function (e) {
+        SL.ui.toast('重载效果库失败：' + (e && e.message ? e.message : e), 'warn');
       });
     }
     if (kinds.passes) {
       SL.passes.sync().then(function () {
         SL.ui.toast('passes/ 变了，我的 Pass 已更新', 'info');
+      }).catch(function (e) {
+        SL.ui.toast('重载 passes/ 失败：' + (e && e.message ? e.message : e), 'warn');
       });
     }
     if (kinds.library) {

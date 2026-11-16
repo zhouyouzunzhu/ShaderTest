@@ -40,13 +40,6 @@
         <span class="preset-cap">效果</span>
         <select id="preset-select"></select>
       </label>
-      <div class="tb-sep"></div>
-      <div class="transport">
-        <button class="ibtn" id="btn-play" title="播放 / 暂停 (Space)"></button>
-        <button class="ibtn" id="btn-step" title="暂停时单帧步进 (→)"></button>
-        <button class="ibtn" id="btn-reset-time" title="时间归零 (R)"></button>
-        <span class="time-chip" id="time-readout" title="u_time 当前值">0.00s</span>
-      </div>
     </div>
 
     <div class="tb-right">
@@ -124,8 +117,19 @@
         <!-- 时间轴：拖游标看任意时刻；有 keyframe 的 uniform 会在下面长出一条轨道 -->
         <div class="timeline" id="timeline">
           <div class="tl-head">
-            <span class="tl-mode" id="tl-mode">无限时间</span>
+            <div class="tl-transport">
+              <button class="ibtn sm" id="tl-play" title="播放 / 暂停 (Space)"></button>
+              <button class="ibtn sm" id="tl-step-prev" title="上一帧 (←)"></button>
+              <button class="ibtn sm" id="tl-step" title="下一帧 (→)"></button>
+              <button class="ibtn sm" id="tl-reset" title="时间归零 (R)"></button>
+            </div>
             <span class="tl-time" id="tl-time">0.00s</span>
+            <label class="tl-dur" title="总时长；0 = 无限时间（u_time 一直涨）">
+              <span>时长</span>
+              <input id="tl-dur" type="number" min="0" step="0.05" value="0" inputmode="decimal" aria-label="总时长（秒）">
+              <span>s</span>
+            </label>
+            <span class="tl-mode" id="tl-mode">无限时间</span>
             <span class="tl-spacer"></span>
             <button class="tool-btn" id="tl-key" title="在当前时刻给这个 Pass 的所有有 keyframe 的参数补一帧（K）">
               <span id="tl-key-ic"></span><span>打帧</span>
@@ -138,7 +142,7 @@
             <div class="tl-ruler" id="tl-ruler"></div>
             <div class="tl-lanes" id="tl-lanes"></div>
             <div class="tl-playhead" id="tl-playhead"><span class="tl-knob"></span></div>
-            <div class="tl-empty" id="tl-empty">拖动游标预览时间；在右侧参数名后面点 ◇ 就能给这个参数打关键帧</div>
+            <div class="tl-empty" id="tl-empty">拖游标预览时间 · 在右侧参数名后点 ◇ 打关键帧 · 时长填 0 表示无限</div>
           </div>
         </div>
 
@@ -239,18 +243,18 @@
 <div id="modal-root"></div>
 <div id="ctxmenu" class="ctxmenu hidden"></div>
 
-<script src="js/util.js?v=22"></script>
-<script src="js/glsl.js?v=22"></script>
-<script src="js/assets.js?v=22"></script>
-<script src="js/engine.js?v=22"></script>
-<script src="js/editor.js?v=22"></script>
-<script src="js/uniforms.js?v=22"></script>
-<script src="js/pipeline.js?v=22"></script>
-<script src="js/passes.js?v=22"></script>
+<script src="js/util.js?v=28"></script>
+<script src="js/glsl.js?v=28"></script>
+<script src="js/assets.js?v=28"></script>
+<script src="js/engine.js?v=28"></script>
+<script src="js/editor.js?v=28"></script>
+<script src="js/uniforms.js?v=28"></script>
+<script src="js/pipeline.js?v=28"></script>
+<script src="js/passes.js?v=28"></script>
 <!-- 效果库 / 公共图库：由 node tools/lib.mjs build 生成，缺文件时页面照常可用 -->
-<script src="effects/index.js?v=22"></script>
-<script src="library/index.js?v=22"></script>
-<script src="js/store.js?v=22"></script>
-<script src="js/app.js?v=22"></script>
+<script src="effects/index.js?v=28"></script>
+<script src="library/index.js?v=28"></script>
+<script src="js/store.js?v=28"></script>
+<script src="js/app.js?v=28"></script>
 </body>
 </html>

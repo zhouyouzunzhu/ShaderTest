@@ -1,10 +1,13 @@
 /* ==========================================================================
-   passes.js — 常见 Pass 模板（插入到管线里的现成算法）
+   passes.js — 常见 Pass 模板（插入管线里的现成算法）
    --------------------------------------------------------------------------
-   每个模板：{ id, name, group, desc, tags, passes:[ {name, code, format?, scale?, bindings?} ] }
-   · 一个模板可能包含多个 Pass（高斯模糊是横+纵两趟，泛光是四趟）
-   · code 里不用写 #version / precision，构建器会补；可用 u_tex / vUv / fragColor
-   · bindings 里的 passId 支持 '__source__'（原始输入），其余省略等于「上一 Pass」
+   每个模板正好一个 Pass：
+     { id, name, group, role:'filter'|'source', desc, pass:{name, code, ...} }
+
+   · role='filter'：叠加态，读 u_tex（上一 Pass 的输出）再输出，如调色 / 模糊 / 扭曲
+   · role='source'：中间态，不读 u_tex，自己生成一张图（噪声 / 渐变 / 条纹…），
+     供后面的 Pass 用「指定 Pass」把它的输出当纹理采样
+   · code 里不用写 #version / precision，构建器会补；可用 vUv / fragColor / u_time
    · 模板只描述形状，插入时由 app.js 分配 p1..pN 的 id
    ========================================================================== */
 window.SL = window.SL || {};
@@ -89,70 +92,58 @@ void main() {
 }
 `;
 
-  /* --------------------------------- 模糊 --------------------------------- */
+  /* ------------------------------- 模糊 ------------------------------- */
 
-  const GAUSS_H = `
+  const GAUSS_TPL = (dir) => `
 uniform sampler2D u_tex;
-uniform float u_radius; // @range 0 16 @step 0.1 @default 3.0 @label 半径(px)
+
+uniform float u_radius; // @range 0 3 @step 0.01 @default 1.0 @label 半径
+uniform float u_strength; // @range 0 1 @step 0.01 @default 1.0 @label 强度
 
 void main() {
-  float w[5] = float[](0.227027, 0.1945946, 0.1216216, 0.054054, 0.016216);
-  vec2 sp = vec2(u_texel.x * u_radius, 0.0);
-  vec3 c = texture(u_tex, vUv).rgb * w[0];
-  for (int i = 1; i < 5; i++) {
-    vec2 o = sp * float(i);
-    c += texture(u_tex, vUv + o).rgb * w[i];
-    c += texture(u_tex, vUv - o).rgb * w[i];
-  }
-  fragColor = vec4(c, 1.0);
+  vec2 sp = ${dir} * u_texel * u_radius;
+
+  vec3 c = texture(u_tex, vUv).rgb * 0.227027;
+  c += texture(u_tex, vUv + sp * 1.3846).rgb * 0.3162162;
+  c += texture(u_tex, vUv - sp * 1.3846).rgb * 0.3162162;
+  c += texture(u_tex, vUv + sp * 3.2308).rgb * 0.0702703;
+  c += texture(u_tex, vUv - sp * 3.2308).rgb * 0.0702703;
+
+  vec3 src = texture(u_tex, vUv).rgb;
+  fragColor = vec4(mix(src, c, u_strength), 1.0);
 }
 `;
 
-  const GAUSS_V = `
-uniform sampler2D u_tex;
-uniform float u_radius; // @range 0 16 @step 0.1 @default 3.0 @label 半径(px)
-
-void main() {
-  float w[5] = float[](0.227027, 0.1945946, 0.1216216, 0.054054, 0.016216);
-  vec2 sp = vec2(0.0, u_texel.y * u_radius);
-  vec3 c = texture(u_tex, vUv).rgb * w[0];
-  for (int i = 1; i < 5; i++) {
-    vec2 o = sp * float(i);
-    c += texture(u_tex, vUv + o).rgb * w[i];
-    c += texture(u_tex, vUv - o).rgb * w[i];
-  }
-  fragColor = vec4(c, 1.0);
-}
-`;
+  const GAUSS_H = GAUSS_TPL('vec2(1.0, 0.0)');
+  const GAUSS_V = GAUSS_TPL('vec2(0.0, 1.0)');
 
   const ZOOM_BLUR = `
 uniform sampler2D u_tex;
 
-uniform float u_amount; // @range 0 0.2 @step 0.001 @default 0.04 @label 拉伸
-uniform float u_center; // @range 0 6 @step 0.01 @default 2.0 @label 聚焦
+uniform float u_amount; // @range 0 0.4 @step 0.005 @default 0.08 @label 拉伸
+uniform vec2  u_center; // @range 0 1 @step 0.01 @default 0.5 0.5 @label 中心
 
 void main() {
-  vec2 dir = vUv - 0.5;
-  vec3 sum = vec3(0.0);
-  const int N = 10;
-  for (int i = 0; i < N; i++) {
-    float k = float(i) / float(N - 1);
-    // 越靠近中心采样越密，避免整体发糊
-    vec2 uv = 0.5 + dir * (1.0 - u_amount * k);
-    sum += texture(u_tex, uv).rgb;
+  vec2 dir = vUv - u_center;
+  vec3 acc = vec3(0.0);
+  float ws = 0.0;
+  for (int i = 0; i < 10; i++) {
+    float k = float(i) / 9.0;
+    float w = 1.0 - k * 0.7;
+    acc += texture(u_tex, vUv - dir * u_amount * k).rgb * w;
+    ws += w;
   }
-  vec3 c = sum / float(N);
-  fragColor = vec4(c, 1.0);
+  fragColor = vec4(acc / ws, 1.0);
 }
 `;
 
-  /* ------------------------------ 提取 / 描边 ------------------------------ */
+  /* ------------------------------- 提取 ------------------------------- */
 
   const BRIGHT = `
 uniform sampler2D u_tex;
 
-uniform float u_threshold; // @range 0 2 @step 0.01 @default 0.70 @label 阈值
-uniform float u_knee;      // @range 0 1 @step 0.01 @default 0.30 @label 过渡
+uniform float u_threshold; // @range 0 2 @step 0.01 @default 0.7 @label 阈值
+uniform float u_knee;      // @range 0 1 @step 0.01 @default 0.3 @label 过渡
 
 void main() {
   vec3 c = texture(u_tex, vUv).rgb;
@@ -165,75 +156,87 @@ void main() {
   const EDGE = `
 uniform sampler2D u_tex;
 
-uniform float u_strength; // @range 0 6 @step 0.01 @default 1.4 @label 强度
-uniform float u_mix;      // @range 0 1 @step 0.01 @default 1 @label 混合原图
-uniform float u_power;    // @range 0.5 4 @step 0.01 @default 1 @label 对比
+uniform float u_strength; // @range 0 4 @step 0.01 @default 1.0 @label 强度
+uniform float u_mix;      // @range 0 1 @step 0.01 @default 0.0 @label 叠加原图
+uniform float u_power;    // @range 0.5 4 @step 0.01 @default 1.0 @label 锐度
 uniform vec3  u_color;    // @color @label 线条颜色
 
 float lum(vec2 uv) { return sl_luma(texture(u_tex, uv).rgb); }
 
 void main() {
-  vec2 t = u_texel;
-  float tl = lum(vUv + vec2(-t.x,  t.y));
-  float tc = lum(vUv + vec2( 0.0,  t.y));
-  float tr = lum(vUv + vec2( t.x,  t.y));
-  float ml = lum(vUv + vec2(-t.x,  0.0));
-  float mr = lum(vUv + vec2( t.x,  0.0));
-  float bl = lum(vUv + vec2(-t.x, -t.y));
-  float bc = lum(vUv + vec2( 0.0, -t.y));
-  float br = lum(vUv + vec2( t.x, -t.y));
+  vec2 sp = u_texel;
+  float tl = lum(vUv + vec2(-sp.x, sp.y));
+  float tr = lum(vUv + sp);
+  float bl = lum(vUv - sp);
+  float br = lum(vUv + vec2(sp.x, -sp.y));
+  float l = lum(vUv - vec2(sp.x, 0.0));
+  float r = lum(vUv + vec2(sp.x, 0.0));
+  float b = lum(vUv - vec2(0.0, sp.y));
+  float t = lum(vUv + vec2(0.0, sp.y));
 
-  float gx = (tr + 2.0 * mr + br) - (tl + 2.0 * ml + bl);
-  float gy = (tl + 2.0 * tc + tr) - (bl + 2.0 * bc + br);
-  float g = pow(length(vec2(gx, gy)), u_power) * u_strength;
+  float gx = (tr + 2.0 * r + br) - (tl + 2.0 * l + bl);
+  float gy = (tl + 2.0 * t + tr) - (bl + 2.0 * b + br);
+  float g = sqrt(gx * gx + gy * gy) * u_strength;
+  g = pow(clamp(g, 0.0, 1.0), u_power);
 
-  vec3 base = texture(u_tex, vUv).rgb;
-  fragColor = vec4(mix(base, u_color * clamp(g, 0.0, 4.0), u_mix), 1.0);
+  vec3 src = texture(u_tex, vUv).rgb;
+  vec3 line = u_color * g;
+  fragColor = vec4(mix(line, src + line, u_mix), 1.0);
 }
 `;
 
-  /* --------------------------------- 合成 --------------------------------- */
+  /* ------------------------------- 合成 ------------------------------- */
 
-  const BLOOM_COMP = `
-uniform sampler2D u_base;   // 原始画面
-uniform sampler2D u_bloom;  // 模糊后的亮部
+  const GLOW = `
+uniform sampler2D u_tex;
 
-uniform float u_intensity; // @range 0 4 @step 0.01 @default 1.2 @label 强度
-uniform float u_exposure;  // @range 0.2 3 @step 0.01 @default 1.0 @label 曝光
+uniform float u_threshold; // @range 0 2 @step 0.01 @default 0.65 @label 阈值
+uniform float u_knee;      // @range 0 1 @step 0.01 @default 0.35 @label 过渡
+uniform float u_spread;    // @range 0 0.08 @step 0.001 @default 0.018 @label 扩散
+uniform float u_gain;      // @range 0 3 @step 0.01 @default 1.0 @label 强度
+uniform vec3  u_color;     // @color @label 辉光颜色
 
 void main() {
-  vec3 base  = texture(u_base, vUv).rgb;
-  vec3 bloom = texture(u_bloom, vUv).rgb;
+  vec3 base = texture(u_tex, vUv).rgb;
 
-  vec3 c = base + bloom * u_intensity;
-  c *= u_exposure;
-  c = c / (1.0 + c * 0.35);
+  // 两圈 8 向采样：够用又便宜，想更柔就叠两次模糊 Pass
+  vec3 acc = vec3(0.0);
+  for (int i = 0; i < 8; i++) {
+    float a = float(i) * 0.785398;
+    vec2 d = vec2(cos(a), sin(a));
+    vec3 s1 = texture(u_tex, vUv + d * u_spread).rgb;
+    vec3 s2 = texture(u_tex, vUv + d * u_spread * 2.35).rgb;
+    acc += s1 * smoothstep(u_threshold, u_threshold + max(u_knee, 1e-3), sl_luma(s1));
+    acc += s2 * 0.6 * smoothstep(u_threshold, u_threshold + max(u_knee, 1e-3), sl_luma(s2));
+  }
+  vec3 glow = acc / 8.0 * u_color * u_gain;
 
-  fragColor = vec4(c, 1.0);
+  vec3 c = base + glow;
+  c = c / (1.0 + c * 0.3);   // 简易 tonemap，避免亮部糊成一片白
+  fragColor = vec4(clamp(c, 0.0, 1.0), 1.0);
 }
 `;
 
-  /* -------------------------------- 风格化 -------------------------------- */
+  /* ------------------------------- 风格化 ------------------------------- */
 
   const CHROMA = `
 uniform sampler2D u_tex;
 
-uniform float u_amount; // @range 0 0.03 @step 0.0005 @default 0.005 @label 色差
-uniform float u_zoom;   // @range 1 1.3 @step 0.001 @default 1.04 @label 缩放
-uniform float u_vig;    // @range 0 1 @step 0.01 @default 0.45 @label 暗角
-uniform float u_scan;   // @range 0 1 @step 0.01 @default 0 @label 扫描线
+uniform float u_amount; // @range 0 0.05 @step 0.0005 @default 0.004 @label 色散
+uniform float u_zoom;   // @range 0 0.2 @step 0.001 @default 0.0 @label 径向缩放
+uniform float u_vig;    // @range 0 1 @step 0.01 @default 0.35 @label 暗角
+uniform float u_scan;   // @range 0 1 @step 0.01 @default 0.0 @label 扫描线
 
 void main() {
-  vec2 d = vUv - 0.5;
-  vec2 p = d * u_zoom + 0.5;
+  vec2 p = vUv - 0.5;
+  vec2 uv = 0.5 + p * (1.0 - u_zoom);
+  vec3 c;
+  c.r = texture(u_tex, uv + p * u_amount).r;
+  c.g = texture(u_tex, uv).g;
+  c.b = texture(u_tex, uv - p * u_amount).b;
 
-  float r = texture(u_tex, p + d * u_amount).r;
-  float g = texture(u_tex, p).g;
-  float b = texture(u_tex, p - d * u_amount).b;
-  vec3 c = vec3(r, g, b);
-
-  c *= mix(1.0, smoothstep(0.95, 0.15, length(d) * 1.15), u_vig);
-  c *= 1.0 - u_scan * 0.35 * step(0.5, fract(vUv.y * u_resolution.y * 0.5));
+  c *= mix(1.0, smoothstep(0.9, 0.25, length(p) * 1.25), u_vig);
+  c *= mix(1.0, 0.85 + 0.15 * sin(vUv.y * u_resolution.y * 1.6), u_scan);
 
   fragColor = vec4(c, 1.0);
 }
@@ -242,29 +245,34 @@ void main() {
   const PIXEL = `
 uniform sampler2D u_tex;
 
-uniform float u_size;   // @range 1 64 @step 1 @default 6 @label 像素块
-uniform float u_levels; // @range 2 32 @step 1 @default 12 @label 色阶
-uniform float u_grid;   // @range 0 1 @step 0.01 @default 0 @label 描格
-uniform float u_dither; // @range 0 1 @step 0.01 @default 0.35 @label 抖动
+uniform float u_size;   // @range 2 128 @step 1 @default 24 @label 像素块
+uniform float u_levels; // @range 2 32 @step 1 @default 8 @label 色阶数
+uniform float u_dither; // @range 0 1 @step 0.01 @default 0.6 @label 抖动
+uniform float u_grid;   // @range 0 1 @step 0.01 @default 0.0 @label 网格线
+
+float bayer4(vec2 p) {
+  int x = int(mod(p.x, 4.0));
+  int y = int(mod(p.y, 4.0));
+  float m[16] = float[16](0.0, 8.0, 2.0, 10.0,
+                          12.0, 4.0, 14.0, 6.0,
+                          3.0, 11.0, 1.0, 9.0,
+                          15.0, 7.0, 13.0, 5.0);
+  return m[y * 4 + x] / 16.0;
+}
 
 void main() {
-  vec2 cells = max(floor(u_resolution / max(u_size, 1.0)), vec2(1.0));
-  vec2 cell = floor(vUv * cells);
-  vec2 uv = (cell + 0.5) / cells;
-
+  vec2 block = floor(vUv * u_resolution / u_size);
+  vec2 uv = (block + 0.5) * u_size / u_resolution;
   vec3 c = texture(u_tex, uv).rgb;
 
-  // 有序抖动（4×4 Bayer），缓解低色阶的色带
-  vec2 p = mod(cell, 4.0);
-  float bayer = mod(p.x * 2.0 + p.y * 3.0, 4.0) / 4.0;
-  c += (bayer - 0.5) * u_dither / u_levels;
+  float d = (bayer4(block) - 0.5) * u_dither / u_levels;
+  c = floor((c + d) * u_levels + 0.5) / u_levels;
 
-  c = floor(c * u_levels + 0.5) / u_levels;
-
-  vec2 f = fract(vUv * cells);
-  float line = 1.0 - smoothstep(0.0, 0.06, min(min(f.x, 1.0 - f.x), min(f.y, 1.0 - f.y)));
-  c = mix(c, vec3(0.0), line * u_grid * 0.6);
-
+  if (u_grid > 0.0) {
+    vec2 g = fract(vUv * u_resolution / u_size);
+    float line = 1.0 - smoothstep(0.0, 0.06, min(min(g.x, 1.0 - g.x), min(g.y, 1.0 - g.y)));
+    c = mix(c, vec3(0.0), line * u_grid);
+  }
   fragColor = vec4(c, 1.0);
 }
 `;
@@ -272,32 +280,29 @@ void main() {
   const GRAIN = `
 uniform sampler2D u_tex;
 
-uniform float u_amount; // @range 0 0.4 @step 0.005 @default 0.06 @label 强度
-uniform float u_size;   // @range 1 4 @step 0.5 @default 1.0 @label 颗粒大小
-uniform float u_flicker;// @range 0 1 @step 0.01 @default 0.3 @label 闪烁
+uniform float u_amount; // @range 0 0.3 @step 0.001 @default 0.05 @label 颗粒
+uniform float u_size;   // @range 0.5 4 @step 0.1 @default 1.0 @label 颗粒尺寸
+uniform float u_luma;   // @range 0 1 @step 0.01 @default 0.0 @label 亮度偏移
 
 void main() {
   vec3 c = texture(u_tex, vUv).rgb;
-
-  // 每帧变化的哈希噪声（u_frame 保证逐帧不同）
-  vec2 gp = floor(vUv * u_resolution / max(u_size, 0.5));
-  float n = sl_hash21(gp + vec2(u_frame * 37.0, u_frame * 91.0));
-  float k = (n - 0.5) * u_amount * (1.0 + u_flicker * 4.0);
-
-  c += k;
+  vec2 gp = floor(vUv * u_resolution / max(u_size, 0.1));
+  float n = sl_hash21(gp + vec2(u_frame * 37.0, u_frame * 91.0)) - 0.5;
+  c += n * u_amount;
+  c += u_luma;
   fragColor = vec4(clamp(c, 0.0, 1.0), 1.0);
 }
 `;
 
-  /* --------------------------------- 扭曲 --------------------------------- */
+  /* ------------------------------- 扭曲 ------------------------------- */
 
   const WAVE = `
 uniform sampler2D u_tex;
 
-uniform float u_amp;   // @range 0 0.1 @step 0.001 @default 0.018 @label 幅度
-uniform float u_freq;  // @range 1 60 @step 0.5 @default 16 @label 频率
-uniform float u_speed; // @range 0 4 @step 0.01 @default 1.2 @label 速度
-uniform float u_aber;  // @range 0 3 @step 0.01 @default 1 @label 色散
+uniform float u_amp;   // @range 0 0.1 @step 0.001 @default 0.012 @label 幅度
+uniform float u_freq;  // @range 2 80 @step 0.5 @default 26.0 @label 频率
+uniform float u_speed; // @range 0 8 @step 0.05 @default 2.0 @label 速度
+uniform float u_aber;  // @range 0 1 @step 0.01 @default 0.2 @label 色散
 
 void main() {
   vec2 p = vUv - 0.5;
@@ -318,7 +323,7 @@ void main() {
 
   const DISPLACE = `
 uniform sampler2D u_tex;
-uniform sampler2D u_noise; // 位移图（默认用内置噪声）
+uniform sampler2D u_noise; // 位移图（默认用内置噪声，也可换成生成 Pass 的输出）
 
 uniform float u_amount; // @range 0 0.2 @step 0.001 @default 0.03 @label 强度
 uniform float u_speed;  // @range 0 2 @step 0.01 @default 0.15 @label 流动速度
@@ -351,6 +356,162 @@ void main() {
 }
 `;
 
+  /* ------------------------------- 生成（中间态） ------------------------------- */
+
+  const GEN_PERLIN = `
+// 柏林式噪声：多层 value noise，输出灰度图
+uniform float u_scale;    // @range 1 32 @step 0.5 @default 6.0 @label 密度
+uniform float u_octaves;  // @range 1 6 @step 1 @default 4 @label 层数
+uniform float u_seed;     // @range 0 100 @step 1 @default 0 @label 种子
+uniform float u_contrast; // @range 0.2 3 @step 0.01 @default 1.0 @label 对比
+
+float vnoise(vec2 p) {
+  vec2 i = floor(p);
+  vec2 f = fract(p);
+  vec2 u = f * f * (3.0 - 2.0 * f);
+  float a = sl_hash21(i);
+  float b = sl_hash21(i + vec2(1.0, 0.0));
+  float c = sl_hash21(i + vec2(0.0, 1.0));
+  float d = sl_hash21(i + vec2(1.0, 1.0));
+  return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+
+void main() {
+  vec2 p = vUv * u_scale + vec2(u_seed * 13.7, u_seed * 29.3);
+  float v = 0.0;
+  float amp = 0.5;
+  float norm = 0.0;
+  for (int i = 0; i < 6; i++) {
+    if (float(i) >= u_octaves) break;
+    v += vnoise(p) * amp;
+    norm += amp;
+    p *= 2.0;
+    amp *= 0.5;
+  }
+  v /= max(norm, 1e-4);
+  v = clamp((v - 0.5) * u_contrast + 0.5, 0.0, 1.0);
+  fragColor = vec4(vec3(v), 1.0);
+}
+`;
+
+  const GEN_FBM = `
+// FBM 云：噪声再做一层域扭曲，适合当烟雾 / 水汽 / 位移图
+uniform float u_scale;   // @range 1 24 @step 0.5 @default 4.0 @label 密度
+uniform float u_warp;    // @range 0 2 @step 0.01 @default 0.6 @label 扭曲
+uniform float u_gain;    // @range 0.2 1 @step 0.01 @default 0.55 @label 细节
+uniform float u_seed;    // @range 0 100 @step 1 @default 0 @label 种子
+
+float vnoise(vec2 p) {
+  vec2 i = floor(p);
+  vec2 f = fract(p);
+  vec2 u = f * f * (3.0 - 2.0 * f);
+  float a = sl_hash21(i);
+  float b = sl_hash21(i + vec2(1.0, 0.0));
+  float c = sl_hash21(i + vec2(0.0, 1.0));
+  float d = sl_hash21(i + vec2(1.0, 1.0));
+  return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+
+float fbm(vec2 p) {
+  float v = 0.0;
+  float amp = 0.5;
+  float norm = 0.0;
+  for (int i = 0; i < 5; i++) {
+    v += vnoise(p) * amp;
+    norm += amp;
+    p *= 2.0;
+    amp *= 0.5;
+  }
+  return v / max(norm, 1e-4);
+}
+
+void main() {
+  vec2 p = vUv * u_scale + vec2(u_seed * 7.1, u_seed * 11.7);
+  vec2 q = vec2(fbm(p), fbm(p + vec2(5.2, 1.3)));
+  float v = fbm(p + q * u_warp * 4.0);
+  v = mix(0.5, v, u_gain + 0.001);
+  fragColor = vec4(vec3(clamp(v, 0.0, 1.0)), 1.0);
+}
+`;
+
+  const GEN_VORONOI = `
+// 沃罗诺伊细胞：硬边板块，适合做鳞片 / 碎裂 / 遮罩
+uniform float u_scale;  // @range 1 40 @step 0.5 @default 8.0 @label 密度
+uniform float u_jitter; // @range 0 1 @step 0.01 @default 0.9 @label 抖动
+uniform float u_seed;   // @range 0 100 @step 1 @default 0 @label 种子
+uniform float u_soft;   // @range 0 0.5 @step 0.005 @default 0.04 @label 边缘
+
+void main() {
+  vec2 p = vUv * u_scale + u_seed;
+  vec2 n = floor(p);
+  vec2 f = fract(p);
+  float md = 8.0;
+  float md2 = 8.0;
+  for (int j = -1; j <= 1; j++) {
+    for (int i = -1; i <= 1; i++) {
+      vec2 g = vec2(float(i), float(j));
+      vec2 rnd = vec2(sl_hash21(n + g), sl_hash21(n + g + 17.3));
+      rnd = 0.5 + 0.5 * sin(u_seed + TAU * rnd) * u_jitter;
+      vec2 r = g + rnd - f;
+      float d = dot(r, r);
+      if (d < md) { md2 = md; md = d; }
+      else if (d < md2) { md2 = d; }
+    }
+  }
+  float edge = sqrt(md2) - sqrt(md);
+  float cell = sqrt(md);
+  // 细胞内部亮、边界暗
+  float v = smoothstep(0.0, u_soft + 1e-4, edge) * (1.0 - cell);
+  fragColor = vec4(vec3(clamp(v, 0.0, 1.0)), 1.0);
+}
+`;
+
+  const GEN_GRADIENT = `
+// 径向渐变：中间亮到边缘暗，适合当光晕 / 遮罩
+uniform vec2  u_center; // @range 0 1 @step 0.01 @default 0.5 0.5 @label 中心
+uniform float u_radius; // @range 0.05 1.5 @step 0.01 @default 0.55 @label 半径
+uniform float u_soft;   // @range 0.01 1 @step 0.01 @default 0.5 @label 柔化
+uniform float u_invert; // @range 0 1 @step 1 @default 0 @label 反向
+
+void main() {
+  float d = length(vUv - u_center);
+  float v = 1.0 - smoothstep(u_radius - u_soft, u_radius, d);
+  v = mix(v, 1.0 - v, u_invert);
+  fragColor = vec4(vec3(clamp(v, 0.0, 1.0)), 1.0);
+}
+`;
+
+  const GEN_STRIPES = `
+// 斜向条纹：角度 / 频率 / 软硬都能调
+uniform float u_angle; // @range 0 3.1416 @step 0.01 @default 0.7854 @label 角度
+uniform float u_freq;  // @range 1 60 @step 0.5 @default 12.0 @label 频率
+uniform float u_soft;  // @range 0.001 0.5 @step 0.001 @default 0.08 @label 软边
+uniform float u_duty;  // @range 0 1 @step 0.01 @default 0.5 @label 占空比
+
+void main() {
+  vec2 d = vec2(cos(u_angle), sin(u_angle));
+  float t = dot(vUv, d) * u_freq;
+  float f = fract(t);
+  float v = smoothstep(0.5 - u_duty * 0.5 - u_soft, 0.5 - u_duty * 0.5, f)
+          * (1.0 - smoothstep(0.5 + u_duty * 0.5, 0.5 + u_duty * 0.5 + u_soft, f));
+  fragColor = vec4(vec3(clamp(v, 0.0, 1.0)), 1.0);
+}
+`;
+
+  const GEN_DOT = `
+// 圆形光斑：中间实、边缘柔，做光点 / 阴影遮罩都行
+uniform float u_radius; // @range 0.02 1 @step 0.005 @default 0.3 @label 半径
+uniform float u_soft;   // @range 0.005 1 @step 0.005 @default 0.25 @label 柔化
+uniform vec2  u_center; // @range 0 1 @step 0.01 @default 0.5 0.5 @label 中心
+uniform vec3  u_color;  // @color @label 颜色
+
+void main() {
+  float d = length(vUv - u_center);
+  float v = 1.0 - smoothstep(u_radius - u_soft, u_radius, d);
+  fragColor = vec4(u_color * clamp(v, 0.0, 1.0), 1.0);
+}
+`;
+
   /* ------------------------------- 组装模板 ------------------------------- */
 
   function p(name, code, extra) {
@@ -360,85 +521,122 @@ void main() {
   }
 
   const LIST = [
+    /* 中间态：不读输入，自己生成一张图 */
     {
-      id: 'color-basic', name: '基础调色', group: '调色',
+      id: 'gen-perlin', name: '柏林噪声', group: '生成', role: 'source',
+      desc: '多层平滑噪声，当位移图 / 遮罩 / 云雾底',
+      pass: p('柏林噪声', GEN_PERLIN)
+    },
+    {
+      id: 'gen-fbm', name: 'FBM 云', group: '生成', role: 'source',
+      desc: '噪声再扭一层，更像烟和水汽',
+      pass: p('FBM 云', GEN_FBM)
+    },
+    {
+      id: 'gen-voronoi', name: '沃罗诺伊', group: '生成', role: 'source',
+      desc: '细胞状板块，鳞片 / 碎裂 / 网点',
+      pass: p('沃罗诺伊', GEN_VORONOI)
+    },
+    {
+      id: 'gen-gradient', name: '径向渐变', group: '生成', role: 'source',
+      desc: '中心亮到边缘暗，可反向，当遮罩用',
+      pass: p('径向渐变', GEN_GRADIENT)
+    },
+    {
+      id: 'gen-stripes', name: '斜向条纹', group: '生成', role: 'source',
+      desc: '角度 / 频率 / 占空比可调，做扫描线或分段',
+      pass: p('斜向条纹', GEN_STRIPES)
+    },
+    {
+      id: 'gen-dot', name: '圆形光斑', group: '生成', role: 'source',
+      desc: '软边圆点，带颜色，当光斑或衰减遮罩',
+      pass: p('圆形光斑', GEN_DOT)
+    },
+
+    /* 叠加态：读上一 Pass 再输出 */
+    {
+      id: 'color-basic', name: '基础调色', group: '调色', role: 'filter',
       desc: '饱和度 / 对比度 / 色调 / 暗角，拿来当起点',
-      passes: [p('调色', COLOR_BASIC)]
+      pass: p('调色', COLOR_BASIC)
     },
     {
-      id: 'levels', name: '色阶', group: '调色',
+      id: 'levels', name: '色阶', group: '调色', role: 'filter',
       desc: '黑场白场 + 伽马，先把输入拉正',
-      passes: [p('色阶', LEVELS)]
+      pass: p('色阶', LEVELS)
     },
     {
-      id: 'gray', name: '黑白', group: '调色',
+      id: 'gray', name: '黑白', group: '调色', role: 'filter',
       desc: '按亮度去色，可带单色调',
-      passes: [p('黑白', GRAY)]
+      pass: p('黑白', GRAY)
     },
     {
-      id: 'aces', name: 'ACES 影调', group: '调色',
+      id: 'aces', name: 'ACES 影调', group: '调色', role: 'filter',
       desc: 'HDR 画面的电影感映射，泛光之后接',
-      passes: [p('ACES', ACES)]
+      pass: p('ACES', ACES)
     },
     {
-      id: 'blur-gauss', name: '高斯模糊', group: '模糊',
-      desc: '横向 + 纵向两趟，9 tap 近似',
-      passes: [p('横向模糊', GAUSS_H), p('纵向模糊', GAUSS_V)]
+      id: 'blur-h', name: '高斯模糊 · 横向', group: '模糊', role: 'filter',
+      desc: '横向一趟；配一个纵向就是两趟模糊',
+      pass: p('横向模糊', GAUSS_H)
     },
     {
-      id: 'blur-zoom', name: '径向模糊', group: '模糊',
+      id: 'blur-v', name: '高斯模糊 · 纵向', group: '模糊', role: 'filter',
+      desc: '纵向一趟，和高斯横向配对用',
+      pass: p('纵向模糊', GAUSS_V)
+    },
+    {
+      id: 'blur-zoom', name: '径向模糊', group: '模糊', role: 'filter',
       desc: '从中心向外拉伸，常用于速度感',
-      passes: [p('径向模糊', ZOOM_BLUR)]
+      pass: p('径向模糊', ZOOM_BLUR)
     },
     {
-      id: 'bright', name: '亮部提取', group: '提取',
+      id: 'bright', name: '亮部提取', group: '提取', role: 'filter',
       desc: '只留超过阈值的亮部，泛光的第一趟',
-      passes: [p('亮部提取', BRIGHT)]
+      pass: p('亮部提取', BRIGHT)
     },
     {
-      id: 'edge', name: 'Sobel 描边', group: '提取',
+      id: 'edge', name: 'Sobel 描边', group: '提取', role: 'filter',
       desc: '按亮度梯度出线，可叠在原图上',
-      passes: [p('描边', EDGE)]
+      pass: p('描边', EDGE)
     },
     {
-      id: 'bloom', name: '泛光 Bloom（四趟）', group: '合成',
-      desc: '亮部提取 + 横纵模糊 + 与原图合成',
-      passes: [p('亮部提取', BRIGHT), p('横向模糊', GAUSS_H), p('纵向模糊', GAUSS_V),
-        p('泛光合成', BLOOM_COMP, { bindings: { u_base: { kind: 'pass', passId: '__source__' }, u_bloom: { kind: 'prev' } } })]
+      id: 'glow', name: '辉光叠加', group: '合成', role: 'filter',
+      desc: '单趟泛光：阈值提亮 + 两圈采样后叠回原图',
+      pass: p('辉光', GLOW)
     },
     {
-      id: 'chroma', name: '色差 + 暗角', group: '风格化',
+      id: 'chroma', name: '色差 + 暗角', group: '风格化', role: 'filter',
       desc: '镜头色散、边缘压暗、可选扫描线',
-      passes: [p('色差暗角', CHROMA)]
+      pass: p('色差暗角', CHROMA)
     },
     {
-      id: 'pixel', name: '像素化', group: '风格化',
+      id: 'pixel', name: '像素化', group: '风格化', role: 'filter',
       desc: '分块 + 色阶量化 + Bayer 抖动',
-      passes: [p('像素化', PIXEL)]
+      pass: p('像素化', PIXEL)
     },
     {
-      id: 'grain', name: '胶片颗粒', group: '风格化',
+      id: 'grain', name: '胶片颗粒', group: '风格化', role: 'filter',
       desc: '逐帧噪声，压一点数字感',
-      passes: [p('颗粒', GRAIN)]
+      pass: p('颗粒', GRAIN)
     },
     {
-      id: 'wave', name: '波纹扭曲', group: '扭曲',
+      id: 'wave', name: '波纹扭曲', group: '扭曲', role: 'filter',
       desc: '按半径做正弦位移，带轻微色散',
-      passes: [p('波纹', WAVE)]
+      pass: p('波纹', WAVE)
     },
     {
-      id: 'displace', name: '噪声位移', group: '扭曲',
+      id: 'displace', name: '噪声位移', group: '扭曲', role: 'filter',
       desc: '用噪声图推 UV，做热浪 / 水波扰动',
-      passes: [p('位移', DISPLACE, { bindings: { u_noise: { kind: 'asset', assetId: 'b:noise' } } })]
+      pass: p('位移', DISPLACE, { bindings: { u_noise: { kind: 'asset', assetId: 'b:noise' } } })
     },
     {
-      id: 'feedback', name: '残影反馈', group: '扭曲',
+      id: 'feedback', name: '残影反馈', group: '扭曲', role: 'filter',
       desc: '把上一帧混进来，做拖尾 / 余像',
-      passes: [p('残影', FEEDBACK, { bindings: { u_self: { kind: 'self' } } })]
+      pass: p('残影', FEEDBACK, { bindings: { u_self: { kind: 'self' } } })
     }
   ];
 
-  const GROUPS = ['调色', '模糊', '提取', '合成', '风格化', '扭曲'];
+  const GROUPS = ['生成', '调色', '模糊', '提取', '合成', '风格化', '扭曲'];
 
   /** 默认新文档：一个「基础调色」Pass，采样输入图 */
   function defaultDoc() {
@@ -456,23 +654,23 @@ void main() {
     has: function (id) { return LIST.some(function (t) { return t.id === id; }); },
     get: function (id) { return LIST.filter(function (t) { return t.id === id; })[0] || null; },
     byGroup: function (group) { return LIST.filter(function (t) { return t.group === group; }); },
-    /** 生成一份可插入的 pass 列表（不带 id，由调用方分配） */
+    /** 生成可插入的 pass 列表（一模板一 Pass；不带 id，由调用方分配） */
     build: function (id) {
       const t = SL.passes.get(id);
       if (!t) return [];
-      return t.passes.map(function (src) {
-        return {
-          name: src.name,
-          code: src.code,
-          enabled: true,
-          format: src.format || 'rgba8',
-          scale: src.scale || 1,
-          filter: 'linear',
-          wrap: 'clamp',
-          bindings: SL.deepClone(src.bindings || {}),
-          values: {}
-        };
-      });
+      const src = t.pass;
+      return [{
+        name: src.name,
+        code: src.code,
+        enabled: true,
+        role: t.role === 'source' ? 'source' : 'filter',
+        format: src.format || 'rgba8',
+        scale: src.scale || 1,
+        filter: 'linear',
+        wrap: 'clamp',
+        bindings: SL.deepClone(src.bindings || {}),
+        values: {}
+      }];
     },
     defaultDoc: defaultDoc
   };

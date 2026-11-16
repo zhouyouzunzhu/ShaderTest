@@ -490,8 +490,8 @@ window.SL = window.SL || {};
             if (t) samplers[sname] = t;
             return;
           }
-          // prev
-          const t = i === 0 ? env.source : outputs[passes[i - 1].id] || env.source;
+          // prev：跳过中间态（role:'source'）的 Pass，它们不参与主链
+          const t = prevOut || env.source;
           if (t) samplers[sname] = t;
         });
         // 兜底：声明了 sampler 但完全没配置绑定 → prev
@@ -499,7 +499,7 @@ window.SL = window.SL || {};
           if (u.type !== gl.SAMPLER_2D && u.type !== gl.SAMPLER_CUBE) return;
           if (samplers[u.name]) return;
           if (bindings[u.name]) return;
-          const t = i === 0 ? env.source : outputs[passes[i - 1].id] || env.source;
+          const t = prevOut || env.source;
           if (t) samplers[u.name] = t;
         });
 
@@ -553,8 +553,11 @@ window.SL = window.SL || {};
         if (needsSelf) rt.cur = dstSlot;
         const out = { tex: dst.tex, w: pw, h: ph };
         outputs[p.id] = out;
-        if (i === passes.length - 1) lastOut = out;
-        prevOut = out;
+        // 中间态只供采样，不推进主链、也不当最终输出
+        if (p.role !== 'source') {
+          prevOut = out;
+          lastOut = out;
+        }
         drawn++;
       }
 

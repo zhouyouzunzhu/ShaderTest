@@ -175,6 +175,8 @@ window.SL = window.SL || {};
           name: typeof raw.name === 'string' && raw.name ? raw.name : ('Pass ' + (i + 1)),
           code: raw.code,
           enabled: raw.enabled !== false,
+          // 中间态（生成类）不参与主链，只供其他 Pass 采样
+          role: raw.role === 'source' ? 'source' : 'filter',
           format: raw.format === 'hdr' ? 'hdr' : PASS_DEFAULTS.format,
           scale: (function () {
             const s = Number(raw.scale);

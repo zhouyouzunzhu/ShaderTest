@@ -19,6 +19,7 @@ window.SL = window.SL || {};
     const wrap = SL.h('div', { class: 'pass-tags' });
     if (pass.format === 'hdr') wrap.appendChild(tag('HDR', 'hdr', 'RGBA16F 浮点缓冲'));
     else wrap.appendChild(tag('8bit', '', 'RGBA8 缓冲'));
+    if (pass.role === 'source') wrap.appendChild(tag('中间态', 'src', '不读输入、不参与主链，供其他 Pass 用「指定 Pass」采样'));
     if (pass.scale !== 1) wrap.appendChild(tag(pass.scale + '×', 'scale', '相对输出分辨率'));
     const texCount = (uniforms || []).filter(function (u) { return u.kind === 'sampler'; }).length;
     if (texCount) wrap.appendChild(tag(texCount + ' tex', 'tex', texCount + ' 个纹理输入'));

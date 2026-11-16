@@ -128,9 +128,10 @@ window.SL = window.SL || {};
 
   function decorateIcons() {
     const map = {
-      'btn-play': App.playing ? 'pause' : 'play',
-      'btn-step': 'step',
-      'btn-reset-time': 'reset',
+      'tl-play': App.playing ? 'pause' : 'play',
+      'tl-step': 'step',
+      'tl-step-prev': 'step',
+      'tl-reset': 'reset',
       'btn-shot': 'camera',
       'btn-save': 'download',
       'btn-open': 'upload',
@@ -643,6 +644,9 @@ window.SL = window.SL || {};
     }
 
     computeTlView();
+    // 时长输入框：没有焦点时才回写，免得打字被重置
+    const durIn = $('#tl-dur');
+    if (durIn && document.activeElement !== durIn) durIn.value = dur > 0 ? String(dur) : '0';
     body.style.setProperty('--tl-grid', (tlTimeToX(tlView.start + 1) - tlTimeToX(tlView.start)) + 'px');
 
     // 刻度
@@ -702,7 +706,6 @@ window.SL = window.SL || {};
       });
     }
     updatePlayhead();
-    updateTimeReadout();
     // 时间轴占了底部空间，把预览的悬浮工具条顶上去
     const pane = $('#preview-pane');
     if (pane) pane.style.setProperty('--tl-h', box.offsetHeight + 'px');
@@ -873,6 +876,38 @@ window.SL = window.SL || {};
       setDirty();
       if (!App.doc.loop && durationOf() > 0 && App.time > durationOf()) App.time = durationOf();
     });
+
+    // 播放控制（从顶栏搬进时间轴，和游标/时长挨在一起）
+    const playBtn = $('#tl-play');
+    if (playBtn) playBtn.addEventListener('click', function () { togglePlay(); });
+    const stepBtn = $('#tl-step');
+    if (stepBtn) stepBtn.addEventListener('click', function () { stepFrame(1); });
+    const stepPrev = $('#tl-step-prev');
+    if (stepPrev) stepPrev.addEventListener('click', function () { stepFrame(-1); });
+    const resetBtn = $('#tl-reset');
+    if (resetBtn) resetBtn.addEventListener('click', function () { resetTime(); });
+
+    // 时长直接在时间轴上改：0 = 无限
+    const durIn = $('#tl-dur');
+    if (durIn) {
+      const commitDur = function () {
+        let v = Number(durIn.value);
+        if (!isFinite(v) || v < 0) v = 0;
+        v = Math.round(v * 100) / 100;
+        App.doc.duration = v;
+        if (v > 0 && App.time > v) App.time = App.doc.loop ? App.time % v : v;
+        durIn.value = String(v);
+        syncTimeline();
+        setDirty();
+        App.needsRender = true;
+      };
+      durIn.addEventListener('change', commitDur);
+      durIn.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') { e.preventDefault(); commitDur(); durIn.blur(); }
+        else if (e.key === 'Escape') { durIn.value = String(durationOf()); durIn.blur(); }
+      });
+    }
+
     const fitBtn = $('#tl-fit');
     if (fitBtn) fitBtn.addEventListener('click', fitTimeline);
     const colBtn = $('#tl-collapse');
@@ -943,7 +978,6 @@ window.SL = window.SL || {};
       return;
     }
     updateStats(res.ms, res.gpu);
-    updateTimeReadout();
     syncResolutionLabel(out);
     updatePlayhead();
 
@@ -1058,10 +1092,6 @@ window.SL = window.SL || {};
     }
   }
 
-  function updateTimeReadout() {
-    $('#time-readout').textContent = App.time.toFixed(2) + 's';
-  }
-
   /* ========================================================================
      五、切换 / 时间
      ====================================================================== */
@@ -1107,9 +1137,9 @@ window.SL = window.SL || {};
   }
 
   function syncPlayButton() {
-    const b = $('#btn-play');
+    const b = $('#tl-play');
     if (!b) return;
-    b.innerHTML = SL.icon(App.playing ? 'pause' : 'play', 15);
+    b.innerHTML = SL.icon(App.playing ? 'pause' : 'play', 14);
     b.title = App.playing ? '暂停 (Space)' : '播放 (Space)';
     b.classList.toggle('on', App.playing);
     const fps = $('#stat-fps');
@@ -1125,14 +1155,12 @@ window.SL = window.SL || {};
     syncPlayButton();
     App.time = Math.max(0, App.time + (dir < 0 ? -1 : 1) / 60);
     App.needsRender = true;
-    updateTimeReadout();
   }
 
   function resetTime() {
     App.time = 0;
     App.frame = 0;
     App.needsRender = true;
-    updateTimeReadout();
     syncScrub();
   }
 
@@ -1226,7 +1254,6 @@ window.SL = window.SL || {};
         App.frame = 0;
         App.playing = true;
         syncPlayButton();
-        updateTimeReadout();
         syncScrub();
         $('#preset-select').value = next.presetId;
         const kb = eff.tags && eff.tags.length ? ' · ' + eff.tags.join(' / ') : '';
@@ -1328,8 +1355,6 @@ window.SL = window.SL || {};
     const nameIn = SL.h('input', { class: 'inp', type: 'text', placeholder: '例如：刀光 · 横扫', value: '' });
     const idIn = SL.h('input', { class: 'inp', type: 'text', placeholder: 'my-effect', style: 'font-family:var(--mono)' });
     const tagsIn = SL.h('input', { class: 'inp', type: 'text', placeholder: '刀光, 一次性, alpha' });
-    const durIn = SL.h('input', { class: 'inp', type: 'number', min: '0', step: '0.05', value: '1' });
-    const loopCb = SL.h('input', { type: 'checkbox', checked: true });
     const alphaCb = SL.h('input', { type: 'checkbox' });
     const bgSel = SL.h('select', { class: 'sel' });
     App.assets.items.forEach(function (a) {
@@ -1345,10 +1370,12 @@ window.SL = window.SL || {};
     body.appendChild(field('名称', nameIn));
     body.appendChild(field('效果 id', idIn, '会成为目录名：effects/<id>/，只能用 a-z 0-9 和短横线；留空就自动生成'));
     body.appendChild(field('标签', tagsIn, '逗号分隔，图库里按标签筛选用'));
-    body.appendChild(field('时长（秒）', durIn, '0 = 无限时间（u_time 一直涨）；大于 0 时可以循环播放，也能打关键帧'));
     body.appendChild(field('背景图', bgSel, '第一个 Pass 用它铺底，第二个 Pass 在它上面做效果'));
-    body.appendChild(field('播放', SL.h('label', { class: 'switch-label' }, loopCb, SL.h('span', { class: 'sw' }), SL.h('span', { text: '循环' }))));
     body.appendChild(field('输出', SL.h('label', { class: 'switch-label' }, alphaCb, SL.h('span', { class: 'sw' }), SL.h('span', { text: '透明背景（alpha）' }))));
+    body.appendChild(SL.h('div', {
+      class: 'insp-note', style: 'padding-top:2px',
+      text: '时长在创建后到时间轴上改（0 = 无限时间）；打关键帧也在时间轴上。'
+    }));
 
     const cancel = SL.h('button', { class: 'btn', text: '取消' });
     const ok = SL.h('button', { class: 'btn primary', text: '创建并打开' });
@@ -1364,8 +1391,8 @@ window.SL = window.SL || {};
       const exists = (window.SL_EFFECTS && window.SL_EFFECTS.effects || []).some(function (e) { return e.id === id; });
       if (exists) { SL.ui.toast('效果库里已经有「' + id + '」了，换个 id', 'warn'); return; }
 
-      const dur = Math.max(0, Number(durIn.value) || 0);
-      const loop = loopCb.checked;
+      const dur = 0;              // 新建时不设时长，到时间轴上改
+      const loop = true;
       const bgId = bgSel.value;
       const doc = makeEffectDraft({
         id: id,
@@ -1423,17 +1450,18 @@ window.SL = window.SL || {};
       filter: 'linear',
       wrap: 'clamp',
       bindings: { u_src: { kind: 'prev' } },
-      values: { u_gain: [1], u_sweep: [-0.2], u_strength: [0.45], u_color: [1, 0.96, 0.88] }
+      values: { u_gain: [1], u_sweep: [0.35], u_strength: [0.45], u_color: [1, 0.96, 0.88] }
     }];
-    // 一次性/循环效果先送一条扫光动画，打开就能拖时间轴看到变化
-    const timeline = {
+    // 新效果默认无时长（无限时间）：不预置动画，先让画面是「有一条光带」的静止状态，
+    // 想动起来就到时间轴上把时长改成 1.2 之类的值，再给 u_sweep 打两帧。
+    const timeline = dur > 0 ? {
       p2: {
         u_sweep: [
           { t: 0, v: [-0.2], e: 'inout' },
-          { t: dur > 0 ? dur : 1.2, v: [1.4], e: 'inout' }
+          { t: dur, v: [1.4], e: 'inout' }
         ]
       }
-    };
+    } : {};
     return {
       presetId: 'effect:' + cfg.id,
       effectId: cfg.id,
@@ -2490,8 +2518,9 @@ window.SL = window.SL || {};
       return;
     }
     const cur = selectedPass();
-    const at = cur ? App.doc.passes.indexOf(cur) + 1 : App.doc.passes.length;
-    // 一次插入多个 Pass（模糊 / 泛光），id 依次分配
+    // 中间态（生成类）不读输入，插到管线最前面才不会挡在消费它的 Pass 后面
+    const isSource = tpl.role === 'source';
+    const at = isSource ? 0 : (cur ? App.doc.passes.indexOf(cur) + 1 : App.doc.passes.length);
     built.forEach(function (bp, k) {
       bp.id = nextPassId();
       App.doc.passes.splice(at + k, 0, bp);
@@ -2501,7 +2530,9 @@ window.SL = window.SL || {};
     renderPipeline();
     syncResolutionLabel();
     setDirty();
-    SL.ui.toast('已插入' + (built.length > 1 ? ' ' + built.length + ' 个 Pass：' : '：') + tpl.name, 'ok');
+    SL.ui.toast(isSource
+      ? '已插入「' + tpl.name + '」到管线开头：它是中间态，在后面 Pass 的采样器里选「指定 Pass」就能采样它'
+      : '已插入：' + tpl.name, 'ok');
     if (built.length === 1) App.editor.focus();
   }
 
@@ -2511,27 +2542,43 @@ window.SL = window.SL || {};
 
   function openPassPicker() {
     if (passPicker) return;
-    const list = $('#pp-list');
     let box;
 
-    const LABELS = { '': '空白', '调色': '调色', '模糊': '模糊', '提取': '提取', '合成': '合成', '风格化': '风格化', '扭曲': '扭曲' };
-    const entries = [{ id: '', name: '空白 Pass', group: '', desc: '一张白纸，自己写' }]
+    const LABELS = { '': '空白' };
+    SL.passes.groups.forEach(function (g) { LABELS[g] = g; });
+
+    const entries = [{ id: '', name: '空白 Pass', group: '', role: 'blank', desc: '一张白纸，自己写' }]
       .concat(SL.passes.list.map(function (t) {
-        return { id: t.id, name: t.name, group: t.group, desc: t.desc, extra: t.passes.length > 1 ? t.passes.length + ' 个 Pass' : '' };
+        return {
+          id: t.id, name: t.name, group: t.group, role: t.role || 'filter',
+          desc: t.desc, code: t.pass && t.pass.code
+        };
       }));
+
+    /* 分组芯片：点一下只看这一类，再点「全部」回来 */
+    const chipDefs = [{ key: '', label: '全部' }].concat(SL.passes.groups.map(function (g) {
+      return { key: g, label: g };
+    }));
+    let curGroup = '';
+
+    function roleTag(e) {
+      if (e.role === 'source') return '<i class="pp-tag src">中间态</i>';
+      if (e.role === 'filter') return '<i class="pp-tag">叠加</i>';
+      return '';
+    }
 
     function rowHtml(e) {
       return '<span class="pp-ico">' + (e.id ? SL.icon('sliders', 13) : SL.icon('plus', 13)) + '</span>' +
-        '<span class="pp-body"><span class="pp-name">' + SL.esc(e.name) +
-        (e.extra ? '<i class="pp-tag">' + SL.esc(e.extra) + '</i>' : '') + '</span>' +
+        '<span class="pp-body"><span class="pp-name">' + SL.esc(e.name) + roleTag(e) + '</span>' +
         '<span class="pp-desc">' + SL.esc(e.desc || '') + '</span></span>';
     }
 
     const html =
       '<div class="pp-wrap">' +
       '<div class="pp-search"><input id="pp-input" type="text" placeholder="搜索 Pass（名称 / 说明）…" spellcheck="false" autocomplete="off"></div>' +
+      '<div class="pp-chips" id="pp-chips"></div>' +
       '<div class="pp-list" id="pp-list"></div>' +
-      '<div class="pp-foot">回车插入到当前 Pass 之后 · Esc 取消</div>' +
+      '<div class="pp-foot">回车插入到当前 Pass 之后 · <b>中间态</b>不读输入，用「指定 Pass」被其他 Pass 采样 · Esc 取消</div>' +
       '</div>';
 
     passPicker = SL.ui.modal({
@@ -2545,8 +2592,40 @@ window.SL = window.SL || {};
 
     const input = passPicker.body.querySelector('#pp-input');
     const listEl = passPicker.body.querySelector('#pp-list');
+    const chipsEl = passPicker.body.querySelector('#pp-chips');
     let filtered = entries;
     let sel = 0;
+
+    function drawChips() {
+      chipsEl.innerHTML = '';
+      chipDefs.forEach(function (c) {
+        const n = c.key ? entries.filter(function (e) { return e.group === c.key; }).length : entries.length;
+        const el = SL.h('button', {
+          class: 'pp-chip' + (c.key === curGroup ? ' on' : ''),
+          'data-key': c.key,
+          html: SL.esc(c.label) + '<i>' + n + '</i>'
+        });
+        el.addEventListener('click', function () {
+          curGroup = c.key;
+          applyFilter();
+          drawChips();
+          input.focus();
+        });
+        chipsEl.appendChild(el);
+      });
+    }
+
+    function applyFilter() {
+      const q = input.value.trim().toLowerCase();
+      filtered = entries.filter(function (e) {
+        if (curGroup && e.group !== curGroup) return false;
+        if (!q) return true;
+        return (e.name + ' ' + (e.desc || '') + ' ' + (e.group || '') + ' ' +
+          (e.code || '').toLowerCase()).indexOf(q) >= 0;
+      });
+      sel = 0;
+      draw();
+    }
 
     function draw() {
       listEl.innerHTML = '';
@@ -2581,21 +2660,24 @@ window.SL = window.SL || {};
       else insertBlankPass();
     }
 
-    input.addEventListener('input', function () {
-      const q = input.value.trim().toLowerCase();
-      filtered = !q ? entries : entries.filter(function (e) {
-        return (e.name + ' ' + (e.desc || '') + ' ' + (e.group || '')).toLowerCase().indexOf(q) >= 0;
-      });
-      sel = 0;
-      draw();
-    });
+    input.addEventListener('input', applyFilter);
 
     input.addEventListener('keydown', function (ev) {
       if (ev.key === 'ArrowDown') { ev.preventDefault(); sel = Math.min(sel + 1, filtered.length - 1); draw(); }
       else if (ev.key === 'ArrowUp') { ev.preventDefault(); sel = Math.max(sel - 1, 0); draw(); }
+      else if (ev.key === 'ArrowLeft' || ev.key === 'ArrowRight') {
+        // 左右键切分组，找得比敲字快
+        ev.preventDefault();
+        const at = chipDefs.findIndex(function (c) { return c.key === curGroup; });
+        const next = (ev.key === 'ArrowRight' ? at + 1 : at - 1 + chipDefs.length) % chipDefs.length;
+        curGroup = chipDefs[next].key;
+        applyFilter();
+        drawChips();
+      }
       else if (ev.key === 'Enter') { ev.preventDefault(); pick(sel); }
     });
 
+    drawChips();
     draw();
     setTimeout(function () { input.focus(); }, 30);
   }
@@ -3050,9 +3132,6 @@ window.SL = window.SL || {};
       }
       if (v.indexOf('effect:') === 0) loadEffect(v.slice(7));
     });
-    $('#btn-play').addEventListener('click', togglePlay);
-    $('#btn-step').addEventListener('click', stepFrame);
-    $('#btn-reset-time').addEventListener('click', resetTime);
 
     $('#btn-library').addEventListener('click', openLibrary);
     $('#btn-new-effect').addEventListener('click', function () {
@@ -3672,22 +3751,28 @@ window.SL = window.SL || {};
       '<p><code>"output": { "alpha": true }</code> 表示输出带透明通道，预览会叠在背景上（棋盘格 / 深色 / 浅色 / 输入图，用预览右上角的「背景」按钮切）。</p>',
       '<h3>时间轴与关键帧</h3>',
       '<ul>',
-      '<li>预览下方是时间轴：没写时长的效果时间一直递增（「无限时间」）；写了 <code>duration</code> 且 <code>loop</code> 为真时循环绕圈，' +
-      '为假时播到末尾停住。</li>',
+      '<li>预览下方是时间轴：时长为 0 时时间一直递增（「无限时间」）；填了时长且打开「循环」时绕圈跑，关掉就播到末尾停住。</li>',
       '<li>点 / 拖时间轴定位；双击轨道在那一帧补一个关键帧；点关键帧改「到下一帧的缓动」（线性 / 缓入 / 缓出 / 缓入缓出 / 阶跃）。</li>',
       '<li>右侧每个参数后面有个 <code>◇</code>：点一下就在当前时刻打帧，变成 <code>◆</code> 表示这个参数有动画。' +
       '已经有动画的参数，直接拖滑块就会在当前时刻自动写帧。</li>',
-      '<li>顶栏时间轴右侧的「打帧」按钮（或 <kbd>K</kbd>）把当前 Pass 的所有轨道在这一帧补齐。</li>',
+      '<li>时间轴右侧的「打帧」按钮（或 <kbd>K</kbd>）把当前 Pass 的所有轨道在这一帧补齐。</li>',
       '</ul>',
       '<h3>公共图库与新建效果</h3>',
       '<p>素材图放到 <code>library/</code>（png / jpg / webp），跑一次 <code>node tools/lib.mjs build</code> 就会出现在「纹理」页的「公共图库」里，' +
       '可以直接当输入图或背景图用；效果包的 <code>inputs</code> 里写 <code>"library:文件名"</code> 也能引用它。</p>',
       '<p>新建效果：效果库面板右上角「＋ 新建效果」、效果下拉最后一项、或命令面板里搜「新建效果」。' +
-      '会得到两个 Pass——<b>p1 背景</b>（铺底图）和 <b>p2 效果</b>（在上一个 Pass 上做效果），并预置一条扫光关键帧。' +
+      '会得到两个 Pass——<b>p1 背景</b>（铺底图）和 <b>p2 效果</b>（在上一个 Pass 上做效果）；时长不在这里填，' +
+      '创建后到时间轴上直接改（0 = 无限时间）再打关键帧。' +
       '做完点「导出效果包 JSON」下载，然后 <code>node tools/lib.mjs import 文件名.effect.json</code> + <code>build</code> 就进库了。</p>',
       '<h3>常见 Pass</h3>',
-      '<p>按 <kbd>N</kbd>（或左栏「新增 Pass」）会打开 Pass 选择器：调色、模糊、亮部提取、Sobel 描边、泛光、色差、像素化、颗粒、波纹、噪声位移、残影反馈。' +
-      '一个模板可能插入多个 Pass（高斯模糊两趟、泛光四趟），插进来之后仍然是普通 Pass，可以随便改代码。</p>',
+      '<p>按 <kbd>N</kbd>（或左栏「插入 Pass」）打开选择器，顶部芯片可以按分组过滤：生成 / 调色 / 模糊 / 提取 / 合成 / 风格化 / 扭曲。' +
+      '一个模板就是一个 Pass，插进来之后就是普通 Pass，代码、参数、绑定都能改。</p>',
+      '<p><b>叠加态</b>（调色 / 模糊 / 扭曲…）读上一 Pass 的输出再输出；' +
+      '<b>中间态</b>（柏林噪声 / FBM / 沃罗诺伊 / 渐变…）不读输入、自己生成一张图，插到管线最前面但不参与主链——' +
+      '在别的 Pass 的采样器里选「指定 Pass」指到它，才能拿来当噪声、遮罩或位移图。</p>',
+      '<h3>播放与时长</h3>',
+      '<p>播放 / 单帧 / 单帧后退 / 归零都在时间轴左边；「时长」输入框直接改这个管线的时长：' +
+      '<code>0</code> 表示无限时间（u_time 一直涨），大于 0 时时间按它循环，并且可以给参数打关键帧。</p>',
       '<h3>快捷键</h3>',
       '<table class="keys-grid">',
       '<tr><td><kbd>Ctrl</kbd>+<kbd>K</kbd></td><td>命令面板：搜命令 / Pass 模板 / 效果 / 贴图</td></tr>',

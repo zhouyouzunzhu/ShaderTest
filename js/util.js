@@ -157,7 +157,13 @@ window.SL = window.SL || {};
     grid: '<rect x="4" y="4" width="6.4" height="6.4" rx="1.4"/><rect x="13.6" y="4" width="6.4" height="6.4" rx="1.4"/><rect x="4" y="13.6" width="6.4" height="6.4" rx="1.4"/><rect x="13.6" y="13.6" width="6.4" height="6.4" rx="1.4"/>',
     x: '<path d="M6 6l12 12"/><path d="M18 6 6 18"/>',
     clock: '<circle cx="12" cy="12" r="8.8"/><path d="M12 7v5.4l3.4 2"/>',
-    dice: '<rect x="3.8" y="3.8" width="16.4" height="16.4" rx="3.2"/><circle cx="8.6" cy="8.6" r="1.1" fill="currentColor" stroke="none"/><circle cx="15.4" cy="15.4" r="1.1" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.1" fill="currentColor" stroke="none"/>'
+    dice: '<rect x="3.8" y="3.8" width="16.4" height="16.4" rx="3.2"/><circle cx="8.6" cy="8.6" r="1.1" fill="currentColor" stroke="none"/><circle cx="15.4" cy="15.4" r="1.1" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.1" fill="currentColor" stroke="none"/>',
+    search: '<circle cx="10.8" cy="10.8" r="6.6"/><path d="M15.6 15.6 20.6 20.6"/>',
+    split: '<rect x="3.4" y="4.6" width="17.2" height="14.8" rx="2.2"/><path d="M12 4.6v14.8"/><path d="M3.4 12h8.6" opacity=".45"/>',
+    zen: '<path d="M9 3.6H3.6V9"/><path d="M15 3.6h5.4V9"/><path d="M15 20.4h5.4V15"/><path d="M9 20.4H3.6V15"/><path d="M7.2 12h9.6"/>',
+    keyboard: '<rect x="2.6" y="6.4" width="18.8" height="11.2" rx="2.2"/><path d="M6.4 10h.02M9.6 10h.02M12.8 10h.02M16 10h.02M6.4 13.6h.02M17.6 13.6h.02"/><path d="M9.6 13.9h4.8"/>',
+    chevronUp: '<path d="M6 14.5 12 8.5 18 14.5"/>',
+    corner: '<path d="M20 5v6.2a2.8 2.8 0 0 1-2.8 2.8H5"/><path d="M8.6 10.4 5 14l3.6 3.6"/>'
   };
 
   /**
@@ -387,6 +393,63 @@ window.SL = window.SL || {};
   }
   function root() { return $('#modal-root') || document.body; }
 
+  /** 是否有浮层（modal / popover / 命令面板）正开着 —— 键盘快捷键要避让 */
+  function hasOverlay() {
+    return overlays.length > 0;
+  }
+
+  /**
+   * 输入框弹窗：返回 Promise<string|null>（取消得到 null）。
+   * @param {object} opts {title, label, value, placeholder, okLabel, validate(v)->string|null}
+   */
+  function prompt(opts) {
+    opts = opts || {};
+    return new Promise(function (resolve) {
+      let settled = false;
+      const done = function (v) { if (settled) return; settled = true; resolve(v); };
+      const inp = h('input', {
+        class: 'uni-num', type: 'text', value: opts.value == null ? '' : String(opts.value),
+        placeholder: opts.placeholder || '0', autofocus: true,
+        style: 'width:100%;height:26px;text-align:left;font-size:12px'
+      });
+      const body = h('div');
+      if (opts.label) body.appendChild(h('div', { style: 'margin-bottom:6px;color:var(--text-3);font-size:11.5px', text: opts.label }));
+      body.appendChild(inp);
+      const err = h('div', { style: 'margin-top:6px;font-size:11px;color:var(--bad);min-height:15px;font-family:var(--mono)' });
+      body.appendChild(err);
+
+      const m = modal({
+        title: opts.title || '输入',
+        narrow: true,
+        icon: 'corner',
+        body: body,
+        footer: null,
+        onClose: function () { done(null); },
+        onMount: function (ctx) {
+          const cancel = h('button', { class: 'btn', text: '取消' });
+          const ok = h('button', { class: 'btn primary', text: opts.okLabel || '确定' });
+          const submit = function () {
+            const v = inp.value.trim();
+            const bad = opts.validate ? opts.validate(v) : null;
+            if (bad) { err.textContent = bad; inp.focus(); return; }
+            done(v); ctx.close();
+          };
+          cancel.onclick = function () { done(null); ctx.close(); };
+          ok.onclick = submit;
+          ctx.foot.appendChild(h('span', { class: 'grow' }));
+          ctx.foot.appendChild(cancel);
+          ctx.foot.appendChild(ok);
+          inp.addEventListener('keydown', function (e) {
+            if (e.key === 'Enter') { e.preventDefault(); submit(); }
+            else if (e.key === 'Escape') { e.preventDefault(); done(null); ctx.close(); }
+          });
+          setTimeout(function () { inp.focus(); inp.select(); }, 30);
+        }
+      });
+      return m;
+    });
+  }
+
   /* ------------------------------ 文件工具 ------------------------------ */
   function download(filename, data, mime) {
     const blob = data instanceof Blob ? data : new Blob([data], { type: mime || 'application/octet-stream' });
@@ -443,7 +506,9 @@ window.SL = window.SL || {};
     toast: toast,
     modal: modal,
     confirm: confirm,
+    prompt: prompt,
     popover: popover,
+    hasOverlay: hasOverlay,
     registerOverlay: registerOverlay,
     unregisterOverlay: unregisterOverlay,
     closeTopOverlay: closeTopOverlay

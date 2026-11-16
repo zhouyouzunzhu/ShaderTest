@@ -38,7 +38,13 @@ window.SL = window.SL || {};
     lastPixel: null,
     save: null,
     booted: false,
-    glError: null
+    glError: null,
+    compare: false,      // 对比原图（跳过管线直接显示输入）
+    zen: false,          // 专注模式：只留预览
+    passMs: {},          // passId → GPU 耗时
+    pipelineT: 0,        // 上次刷新左栏耗时标签的时间
+    savedT: 0,           // 「已保存」提示的淡出计时
+    history: []          // 撤销栈（有限深度）
   };
 
   function dpr() {
@@ -71,10 +77,14 @@ window.SL = window.SL || {};
     bindDrop();
 
     App.save = SL.debounce(function () {
-      if (App.doc) SL.store.save(App.doc);
+      if (!App.doc) return;
+      try {
+        Promise.resolve(SL.store.save(App.doc)).then(flashSaved, function () {});
+      } catch (e) { /* store 内部已提示 */ }
     }, 700);
 
     SL.store.load().then(function (doc) {
+      App.__fresh = !doc;
       applyDoc(doc || SL.store.defaultState());
       bootDone();
     }).catch(function (err) {
@@ -90,6 +100,11 @@ window.SL = window.SL || {};
     if (!App.engine.ok) return;
     requestAnimationFrame(loop);
     if (SL.test && SL.test.autoRun) runSelfTest();
+    if (App.__fresh) {
+      setTimeout(function () {
+        SL.ui.toast('按 Ctrl+K 打开命令面板，? 看快捷键', 'info');
+      }, 700);
+    }
   }
 
   function showFallback(msg) {
@@ -130,6 +145,26 @@ window.SL = window.SL || {};
     });
     const add2 = $('#btn-add-pass-2');
     if (add2) add2.innerHTML = '<span class="plus">+</span><span>新增 Pass</span>';
+    const cmdk = $('#cmdk-btn-ic');
+    if (cmdk) cmdk.innerHTML = SL.icon('search', 11);
+    const saved = $('#save-state .ic');
+    if (saved) saved.innerHTML = SL.icon('check', 11);
+    const cmp = $('#compare-ic');
+    if (cmp) cmp.innerHTML = SL.icon('split', 12);
+  }
+
+  /** 顶栏「已保存」闪一下，让自动保存可见 */
+  function flashSaved() {
+    const el = $('#save-state');
+    if (!el) return;
+    el.classList.add('saved');
+    const tx = el.querySelector('.tx');
+    if (tx) tx.textContent = '已保存';
+    clearTimeout(App.savedT);
+    App.savedT = setTimeout(function () {
+      el.classList.remove('saved');
+      if (tx) tx.textContent = '自动保存';
+    }, 1400);
   }
 
   function fillPresetSelect() {
@@ -164,6 +199,12 @@ window.SL = window.SL || {};
     Promise.all(jobs).then(function () {
       // 面板宽度与编辑器高度
       applyPanelSizes(ui);
+      // 编辑器字号跟随上次使用
+      if (App.editor) {
+        const size = App.editor.setFontSize(ui.editorFont || 12.5);
+        const fEl = $('#font-size');
+        if (fEl) fEl.textContent = String(size);
+      }
       $('#preset-select').value = doc.presetId;
       $('#auto-toggle').checked = true;
 
@@ -331,7 +372,8 @@ window.SL = window.SL || {};
       passes: App.doc.passes,
       time: App.time,
       mouse: App.mouse,
-      viewPassId: App.doc.viewPassId
+      viewPassId: App.doc.viewPassId,
+      compare: App.compare
     };
     const env = {
       source: sourceTex(),
@@ -353,6 +395,39 @@ window.SL = window.SL || {};
     updateStats(res.ms, res.gpu);
     updateTimeReadout();
     syncResolutionLabel(out);
+
+    // 逐 Pass 耗时：最多每 600ms 就地更新左栏标签（不重建列表，避免打断拖拽/改名）
+    if (res.passMs) {
+      App.passMs = res.passMs;
+      const now = performance.now();
+      if (now - App.pipelineT > 600) {
+        App.pipelineT = now;
+        updatePassTimes();
+      }
+    }
+  }
+
+  /** 只更新每个 Pass 条目的耗时徽标 */
+  function updatePassTimes() {
+    const list = $('#pass-list');
+    if (!list) return;
+    SL.$$('.pass-item', list).forEach(function (el) {
+      const id = el.dataset.id;
+      const tags = el.querySelector('.pass-tags');
+      if (!tags) return;
+      let t = tags.querySelector('.ptag.time');
+      const ms = App.passMs[id];
+      const pass = App.doc.passes.filter(function (p) { return p.id === id; })[0];
+      if (ms == null || !pass || pass.enabled === false) {
+        if (t) t.remove();
+        return;
+      }
+      if (!t) {
+        t = SL.h('span', { class: 'ptag time', title: '该 Pass 的 GPU 耗时' });
+        tags.appendChild(t);
+      }
+      t.textContent = SL.fmt(ms, 2) + 'ms';
+    });
   }
 
   function paneSize() {
@@ -497,12 +572,13 @@ window.SL = window.SL || {};
     }
   }
 
-  function stepFrame() {
+  function stepFrame(dir) {
     App.playing = false;
     App.doc.ui.playing = false;
     syncPlayButton();
-    App.time += 1 / 60;
+    App.time = Math.max(0, App.time + (dir < 0 ? -1 : 1) / 60);
     App.needsRender = true;
+    updateTimeReadout();
   }
 
   function resetTime() {
@@ -520,11 +596,20 @@ window.SL = window.SL || {};
     const st = $('#preview-stage');
     const pw = sc.clientWidth, ph = sc.clientHeight;
     const sw = st.offsetWidth, sh = st.offsetHeight;
-    return { pw: pw, ph: ph, sw: sw, sh: sh, bx: (pw - sw) / 2, by: (ph - sh) / 2 };
+    return { pw: pw, ph: ph, sw: sw, sh: sh };
+  }
+
+  /** 缩放后画面在预览区里的居中偏移（不叠加用户平移） */
+  function baseOffset() {
+    const b = stageBase();
+    return { bx: (b.pw - b.sw * App.zoom) / 2, by: (b.ph - b.sh * App.zoom) / 2 };
   }
 
   function applyTransform() {
-    $('#preview-stage').style.transform = 'translate(' + App.panX + 'px,' + App.panY + 'px) scale(' + App.zoom + ')';
+    const base = baseOffset();
+    const x = Math.round((base.bx + App.panX) * 100) / 100;
+    const y = Math.round((base.by + App.panY) * 100) / 100;
+    $('#preview-stage').style.transform = 'translate(' + x + 'px,' + y + 'px) scale(' + App.zoom + ')';
     $('#zoom-readout').textContent = Math.round(App.zoom * 100) + '%';
     App.doc.ui.zoom = App.zoom;
   }
@@ -545,12 +630,16 @@ window.SL = window.SL || {};
     }
     const sc = $('#preview-scroll');
     const r = sc.getBoundingClientRect();
-    const base = stageBase();
-    const px = cx - r.left - base.bx - App.panX;
-    const py = cy - r.top - base.by - App.panY;
+    const b = stageBase();
+    // 光标在预览区内的位置
+    const px = cx - r.left, py = cy - r.top;
+    // 当前画面左上角的实际位置（居中偏移 + 平移）
+    const fx = (b.pw - b.sw * App.zoom) / 2 + App.panX;
+    const fy = (b.ph - b.sh * App.zoom) / 2 + App.panY;
     const k = next / App.zoom;
-    App.panX -= px * (k - 1);
-    App.panY -= py * (k - 1);
+    // 让光标下的那个点缩放后仍在原处
+    App.panX = px - (px - fx) * k - (b.pw - b.sw * next) / 2;
+    App.panY = py - (py - fy) * k - (b.ph - b.sh * next) / 2;
     App.zoom = next;
     applyTransform();
     App.save && App.save();
@@ -570,13 +659,12 @@ window.SL = window.SL || {};
     const base = stageBase();
     if (!base.sw || !base.sh) return;
     if (App.doc.resMode !== 'custom') {
-      if (App.zoom !== 1 || App.panX || App.panY) {
-        App.zoom = 1; App.panX = 0; App.panY = 0;
-        applyTransform();
-      }
-      return;
+      App.zoom = 1; App.panX = 0; App.panY = 0;
+    } else if (base.sw > base.pw || base.sh > base.ph) {
+      App.zoom = SL.clamp(Math.min(base.pw / base.sw, base.ph / base.sh), 0.05, 8);
+      App.panX = 0; App.panY = 0;
     }
-    if (base.sw > base.pw || base.sh > base.ph) fitView();
+    applyTransform();
   }
 
   function bindPreview() {
@@ -642,7 +730,7 @@ window.SL = window.SL || {};
       showPixel(px);
     });
     canvas.addEventListener('mouseleave', function () {
-      $('#hover-readout').innerHTML = '—';
+      hideReadout();
     });
     canvas.addEventListener('mousedown', function (e) {
       if (e.button !== 0) return;
@@ -665,12 +753,37 @@ window.SL = window.SL || {};
       syncResolutionLabel();
     });
 
+    // 对比原图 / 专注模式
+    $('#btn-compare').addEventListener('click', function () { setCompare(!App.compare); });
+    $('#btn-zen').addEventListener('click', function () { setZen(!App.zen); });
+
+    // 双击预览 = 适应窗口
+    pane.addEventListener('dblclick', function (e) {
+      if (e.target.closest('.chip, .pane-top, .pane-bottom')) return;
+      fitView();
+    });
+
+    // Shift + 点击 = 把这点的颜色复制成 #RRGGBB
+    canvas.addEventListener('click', function (e) {
+      if (!e.shiftKey || !App.lastPixel) return;
+      const p = App.lastPixel;
+      const hex = '#' + [p[0], p[1], p[2]].map(function (v) {
+        return SL.pad2(Math.round(SL.clamp(v, 0, 1) * 255).toString(16));
+      }).join('').toUpperCase();
+      copyText(hex).then(function () {
+        SL.ui.toast('已复制 ' + hex, 'ok');
+      }).catch(function () {
+        SL.ui.toast('复制失败：' + hex, 'warn');
+      });
+    });
+
     // 拖拽窗口 → 自适应分辨率
     let rzT = 0;
     window.addEventListener('resize', function () {
       clearTimeout(rzT);
       rzT = setTimeout(function () {
         syncStage();
+        applyTransform();
         App.needsRender = true;
       }, 160);
     });
@@ -682,14 +795,62 @@ window.SL = window.SL || {};
   }
 
   function showPixel(px) {
+    if (!px) { hideReadout(); return; }
+    App.lastPixel = px;
     const hex = SL.rgb01ToHex(px[0], px[1], px[2]);
     const el = $('#hover-readout');
+    el.classList.remove('hidden');
     el.innerHTML = '';
     el.appendChild(SL.h('span', { class: 'swatch', style: 'background:' + hex }));
     el.appendChild(SL.h('b', { text: hex.toUpperCase() }));
     el.appendChild(SL.h('span', {
       text: [px[0], px[1], px[2]].map(function (v) { return v.toFixed(3); }).join(' ')
     }));
+  }
+
+  function hideReadout() {
+    const el = $('#hover-readout');
+    if (!el) return;
+    el.innerHTML = '';
+    el.classList.add('hidden');
+  }
+
+  /** 对比模式：跳过整条管线直接显示输入图 */
+  function setCompare(on) {
+    App.compare = !!on;
+    const btn = $('#btn-compare');
+    if (btn) btn.setAttribute('aria-pressed', App.compare ? 'true' : 'false');
+    App.needsRender = true;
+  }
+
+  /** 专注模式：收起左右栏与编辑器，只留预览 */
+  function setZen(on) {
+    App.zen = !!on;
+    document.body.classList.toggle('zen', App.zen);
+    const btn = $('#btn-zen');
+    if (btn) btn.setAttribute('aria-pressed', App.zen ? 'true' : 'false');
+    // 预览区尺寸变了，等一帧再重算画布
+    requestAnimationFrame(function () {
+      syncStage();
+      applyTransform();
+      App.needsRender = true;
+    });
+  }
+
+  function copyText(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      return navigator.clipboard.writeText(text);
+    }
+    return new Promise(function (resolve, reject) {
+      try {
+        const ta = SL.h('textarea', { style: 'position:fixed;top:-99px;left:0;opacity:0', value: text });
+        document.body.appendChild(ta);
+        ta.select();
+        const ok = document.execCommand('copy');
+        ta.remove();
+        ok ? resolve() : reject(new Error('copy rejected'));
+      } catch (e) { reject(e); }
+    });
   }
 
   function openResMenu(anchor) {
@@ -762,6 +923,8 @@ window.SL = window.SL || {};
       pre: $('#highlight'),
       gutter: $('#gutter'),
       errRows: $('#err-rows'),
+      curLine: $('#cur-line'),
+      fontSize: (App.doc && App.doc.ui && App.doc.ui.editorFont) || 12.5,
       onChange: function (code) {
         const pass = selectedPass();
         if (!pass) return;
@@ -899,6 +1062,7 @@ window.SL = window.SL || {};
       passes: App.doc.passes,
       selectedId: App.doc.selectedPassId,
       errors: errors,
+      passMs: App.passMs,
       uniformsOf: function (id) { return App.parsed[id] || []; },
       onSelect: function (id) { selectPass(id); },
       onToggle: function (id) {
@@ -975,22 +1139,44 @@ window.SL = window.SL || {};
     menu.classList.remove('hidden');
     ctxMenuOpen = true;
 
-    function item(label, fn, danger) {
-      const it = SL.h('div', { class: 'ctxmenu-item', style: danger ? 'color:#ff9caa' : null, text: label });
+    function item(label, fn, danger, key) {
+      const it = SL.h('div', { class: 'ctxmenu-item', style: danger ? 'color:#ff9caa' : null, title: label });
+      it.appendChild(SL.h('span', { class: 'lbl', text: label }));
+      if (key) it.appendChild(SL.h('span', { class: 'key', text: key }));
       it.addEventListener('click', function () { hideCtxMenu(); fn(); });
       menu.appendChild(it);
     }
     function sep() { menu.appendChild(SL.h('div', { class: 'ctxmenu-sep' })); }
     function label(text) { menu.appendChild(SL.h('div', { class: 'ctxmenu-label', text: text })); }
 
-    label(pass.name);
-    item('查看此 Pass 输出', function () {
+    label(pass.name + (pass.enabled === false ? '（已停用）' : ''));
+    item((App.doc.viewPassId === pass.id ? '◉ ' : '') + '查看此 Pass 输出', function () {
       App.doc.viewPassId = pass.id;
       App.needsRender = true;
       renderPipeline();
       syncResolutionLabel();
     });
-    item('复制这个 Pass', function () { duplicatePass(pass); });
+    item(pass.enabled === false ? '启用此 Pass' : '停用此 Pass', function () {
+      togglePass(pass);
+    }, false, 'Ctrl+E');
+    item('重命名…', function () {
+      SL.ui.prompt({
+        title: '重命名 Pass', label: '名称', value: pass.name, okLabel: '保存'
+      }).then(function (v) {
+        if (v == null) return;
+        const name = String(v).trim();
+        if (!name) return;
+        pass.name = name;
+        if (App.doc.selectedPassId === pass.id) $('#editor-title').textContent = name;
+        renderPipeline();
+        setDirty();
+      });
+    });
+    item('复制这个 Pass', function () { duplicatePass(pass); }, false, 'Ctrl+D');
+    item('在下方插入 Pass', function () {
+      App.doc.selectedPassId = pass.id;
+      addPass();
+    }, false, 'N');
     sep();
     label('缓冲格式');
     item(pass.format === 'hdr' ? '改用 RGBA8（默认）' : '改用 RGBA16F（HDR）', function () {
@@ -1010,14 +1196,33 @@ window.SL = window.SL || {};
       });
     });
     sep();
-    item('上移', function () { movePass(pass, -1); });
-    item('下移', function () { movePass(pass, 1); });
+    item('上移', function () { movePass(pass, -1); }, false, 'Ctrl+↑');
+    item('下移', function () { movePass(pass, 1); }, false, 'Ctrl+↓');
     sep();
-    item('删除此 Pass', function () { deletePass(pass); }, true);
+    item('只显示这个 Pass', function () {
+      App.doc.passes.forEach(function (p) { p.enabled = (p.id === pass.id); });
+      App.needsRender = true;
+      renderPipeline();
+      setDirty();
+    });
+    item('导出此 Pass 为 PNG', function () { exportPassImage(pass); });
+    sep();
+    item('删除此 Pass', function () { deletePass(pass); }, true, 'Del');
 
     const w = 210;
     menu.style.left = Math.min(x, window.innerWidth - w - 8) + 'px';
     menu.style.top = Math.min(y, window.innerHeight - 320) + 'px';
+  }
+
+  /** 启用 / 停用某个 Pass（停用只是不参与渲染，代码和参数都留着） */
+  function togglePass(pass) {
+    if (!pass) return;
+    pass.enabled = pass.enabled === false;
+    App.needsRender = true;
+    renderPipeline();
+    syncResolutionLabel();
+    setDirty();
+    SL.ui.toast((pass.enabled === false ? '已停用「' : '已启用「') + pass.name + '」', 'info');
   }
 
   function movePass(pass, dir) {
@@ -1064,8 +1269,32 @@ window.SL = window.SL || {};
     });
   }
 
-  function duplicatePass(pass) {
-    const copy = SL.deepClone(pass);
+  /** 把这个 Pass 的输出单独存成 PNG（临时切到该 Pass 看一眼，再读画布） */
+  function exportPassImage(pass) {
+    const prevView = App.doc.viewPassId;
+    const wasPlaying = App.playing;
+    App.doc.viewPassId = pass.id;
+    App.playing = false;
+    try {
+      renderFrame(0);
+      const url = App.engine.canvas.toDataURL('image/png');
+      fetch(url).then(function (r) { return r.blob(); }).then(function (blob) {
+        const safe = String(pass.name || pass.id).replace(/[^\w\u4e00-\u9fa5-]+/g, '-');
+        SL.io.download('shaderlab-' + safe + '-' + stamp() + '.png', blob, 'image/png');
+        SL.ui.toast('已导出「' + pass.name + '」', 'ok');
+      }).catch(function (e) {
+        SL.ui.toast('导出失败：' + (e && e.message || e), 'bad');
+      });
+    } finally {
+      App.doc.viewPassId = prevView;
+      App.playing = wasPlaying;
+      App.needsRender = true;
+      renderPipeline();
+      syncResolutionLabel();
+    }
+  }
+
+  function duplicatePass(pass) {    const copy = SL.deepClone(pass);
     copy.id = nextPassId();
     copy.name = pass.name + ' 副本';
     const i = App.doc.passes.indexOf(pass);
@@ -1144,6 +1373,9 @@ window.SL = window.SL || {};
     renderInspector();
     if (!silent) {
       renderPipeline();
+      // 让选中的 Pass 在左栏可见（Pass 多了以后键盘切换全靠这个）
+      const item = $('#pass-list') && $('#pass-list').querySelector('.pass-item[data-id="' + pass.id + '"]');
+      if (item && item.scrollIntoView) item.scrollIntoView({ block: 'nearest' });
       SL.store.save(App.doc);
     }
   }
@@ -1183,8 +1415,10 @@ window.SL = window.SL || {};
     const body = $('#inspector-body');
     const uni = App.parsed[pass.id] || [];
     const countEl = $('#uni-count');
-    countEl.textContent = uni.length ? String(uni.length) : '';
-    countEl.classList.toggle('hidden', !uni.length);
+    const params = uni.filter(function (u) { return u.kind !== 'sampler'; });
+    countEl.textContent = params.length ? String(params.length) : '';
+    countEl.classList.toggle('hidden', !params.length);
+    countEl.title = params.length ? params.length + ' 个可调参数' : '';
 
     if (tab === 'uniforms') {
       SL.uniforms.render(body, {
@@ -1202,6 +1436,7 @@ window.SL = window.SL || {};
           App.needsRender = true;
           setDirty();
         },
+        onRefresh: function () { renderInspector(); },
         bindingSize: bindingSize
       });
     } else if (tab === 'textures') {
@@ -1552,6 +1787,12 @@ window.SL = window.SL || {};
     });
 
     $('#btn-help').addEventListener('click', openHelp);
+    $('#btn-cmdk').addEventListener('click', openCmdk);
+
+    // 编辑器状态行的小工具
+    $('#btn-goto').addEventListener('click', promptGoto);
+    $('#btn-font-minus').addEventListener('click', function () { bumpFont(-0.5); });
+    $('#btn-font-plus').addEventListener('click', function () { bumpFont(0.5); });
   }
 
   function stamp() {
@@ -1641,6 +1882,13 @@ window.SL = window.SL || {};
       const typing = SL.isTypingTarget(e.target);
       const mod = SL.hasMod(e);
 
+      // 命令面板：任何地方都能开
+      if (mod && (e.key === 'k' || e.key === 'K' || e.key === 'p' || e.key === 'P')) {
+        e.preventDefault();
+        openCmdk();
+        return;
+      }
+      // 全局：编译 / 导出 / 字号 / 跳行
       if (mod && e.key === 'Enter') { e.preventDefault(); compileNow(); return; }
       if (mod && (e.key === 's' || e.key === 'S')) {
         e.preventDefault();
@@ -1648,14 +1896,71 @@ window.SL = window.SL || {};
         SL.ui.toast('工程已导出为 JSON', 'ok');
         return;
       }
+      if (mod && (e.key === '=' || e.key === '+')) { e.preventDefault(); bumpFont(0.5); return; }
+      if (mod && e.key === '-') { e.preventDefault(); bumpFont(-0.5); return; }
+      if (mod && (e.key === 'g' || e.key === 'G')) { e.preventDefault(); promptGoto(); return; }
+      if (mod && (e.key === 'd' || e.key === 'D')) {
+        e.preventDefault();
+        const p = selectedPass();
+        if (p) duplicatePass(p);
+        return;
+      }
+      if (mod && (e.key === 'e' || e.key === 'E')) {
+        e.preventDefault();
+        togglePass(selectedPass());
+        return;
+      }
       if (typing) return;
 
-      if (e.key === ' ') { /* 已在预览里处理 */ }
-      else if (e.key === 'ArrowRight') { e.preventDefault(); stepFrame(); }
-      else if (e.key === 'r' || e.key === 'R') { resetTime(); }
-      else if (e.key === '?') { openHelp(); }
-      else if (e.key === 'f' || e.key === 'F') { fitView(); }
-      else if (e.key === '1' && mod === false) { /* 预留 */ }
+      // 预览对比：按住 \ 临时看原图（和 B 键切换等价）
+      if (e.key === '\\') {
+        if (!e.repeat) { e.preventDefault(); setCompare(!App.compare); }
+        return;
+      }
+
+      switch (e.key) {
+        case ' ':
+          break;                                // 空格播放/暂停在 bindPreview 里
+        case 'ArrowRight':
+          e.preventDefault(); stepFrame(); break;
+        case 'ArrowLeft':
+          e.preventDefault(); stepFrame(-1); break;
+        case 'r': case 'R':
+          e.preventDefault(); resetTime(); break;
+        case '?':
+          e.preventDefault(); openHelp(); break;
+        case 'f': case 'F':
+          e.preventDefault(); fitView(); break;
+        case '0':
+          e.preventDefault();
+          App.zoom = 1; App.panX = 0; App.panY = 0; applyTransform(); break;
+        case 'b': case 'B':
+          e.preventDefault(); setCompare(!App.compare); break;
+        case 'z': case 'Z':
+          e.preventDefault(); setZen(!App.zen); break;
+        case 'Escape':
+          if (App.zen) { setZen(false); e.preventDefault(); }
+          break;
+        case '[':
+          e.preventDefault(); cyclePass(-1); break;
+        case ']':
+          e.preventDefault(); cyclePass(1); break;
+        case 'n': case 'N':
+          e.preventDefault(); addPass(); break;
+        case 'Delete':
+          e.preventDefault(); deletePass(selectedPass()); break;
+        case '1': e.preventDefault(); setTab('uniforms'); break;
+        case '2': e.preventDefault(); setTab('textures'); break;
+        case '3': e.preventDefault(); setTab('info'); break;
+        case 'ArrowUp':
+          if (mod) { e.preventDefault(); moveSelected(-1); }
+          break;
+        case 'ArrowDown':
+          if (mod) { e.preventDefault(); moveSelected(1); }
+          break;
+        default:
+          break;
+      }
     });
 
     document.addEventListener('sl:save', function () {
@@ -1668,6 +1973,63 @@ window.SL = window.SL || {};
     document.addEventListener('visibilitychange', function () {
       if (document.hidden && App.doc) SL.store.save(App.doc);
     });
+  }
+
+  /* -------- 键盘辅助：字号 / 跳行 / 切 Pass / 移动 Pass -------- */
+  function bumpFont(delta) {
+    if (!App.editor) return;
+    const size = App.editor.setFontSize(App.editor.fontPx + delta);
+    App.doc.ui.editorFont = size;
+    const el = $('#font-size');
+    if (el) el.textContent = String(size);
+    setDirty();
+  }
+
+  function promptGoto() {
+    const total = App.editor ? App.editor.getValue().split('\n').length : 1;
+    SL.ui.prompt({
+      title: '跳到行',
+      label: '行号（1 – ' + total + '）',
+      value: '',
+      placeholder: String(App.editor ? cursorLine() : 1),
+      okLabel: '定位',
+      validate: function (v) {
+        const n = parseInt(v, 10);
+        return isFinite(n) && n >= 1 && n <= total ? '' : '请输入 1 到 ' + total + ' 之间的行号';
+      }
+    }).then(function (v) {
+      if (v == null) return;
+      App.editor.gotoLine(parseInt(v, 10));
+    });
+  }
+
+  function cursorLine() {
+    if (!App.editor) return 1;
+    const ta = App.editor.ta;
+    return ta.value.slice(0, ta.selectionStart).split('\n').length;
+  }
+
+  function cyclePass(dir) {
+    const list = App.doc.passes;
+    if (!list.length) return;
+    let i = list.findIndex(function (p) { return p.id === App.doc.selectedPassId; });
+    if (i < 0) i = 0;
+    const next = list[(i + dir + list.length) % list.length];
+    if (next) selectPass(next.id);
+  }
+
+  function moveSelected(dir) {
+    const arr = App.doc.passes;
+    const i = arr.findIndex(function (p) { return p.id === App.doc.selectedPassId; });
+    const j = i + dir;
+    if (i < 0 || j < 0 || j >= arr.length) return;
+    const item = arr.splice(i, 1)[0];
+    arr.splice(j, 0, item);
+    App.needsRender = true;
+    compileAll();
+    renderPipeline();
+    renderInspector();
+    setDirty();
   }
 
   function bindDrop() {
@@ -1701,6 +2063,207 @@ window.SL = window.SL || {};
       }
       if (files.length) importFiles(files);
     });
+  }
+
+  /* ========================================================================
+     命令面板（Ctrl+K）
+     ====================================================================== */
+  let cmdkEl = null;
+  let cmdkInput = null;
+  let cmdkListEl = null;
+  let cmdkRows = [];
+  let cmdkSel = 0;
+  let cmdkAll = [];
+
+  function cmdkEntries() {
+    const out = [];
+    const add = function (group, label, hint, icon, run, desc) {
+      out.push({ group: group, label: label, hint: hint || '', icon: icon || 'bolt', run: run, desc: desc || '' });
+    };
+
+    add('操作', '播放 / 暂停', 'Space', 'play', togglePlay);
+    add('操作', '单步前进', '→', 'step', function () { stepFrame(1); });
+    add('操作', '单步后退', '←', 'step', function () { stepFrame(-1); });
+    add('操作', '时间归零', 'R', 'reset', resetTime);
+    add('操作', '适应窗口', 'F', 'fit', fitView);
+    add('操作', '按 100% 显示', '0', 'square', function () {
+      App.zoom = 1; App.panX = 0; App.panY = 0; applyTransform();
+    });
+    add('操作', App.compare ? '关闭原图对比' : '对比原图', 'B', 'split', function () { setCompare(!App.compare); });
+    add('操作', App.zen ? '退出专注模式' : '进入专注模式', 'Z', 'zen', function () { setZen(!App.zen); });
+    add('操作', '新增 Pass', 'N', 'plus', addPass);
+    add('操作', '重新编译当前 Pass', 'Ctrl+↵', 'bolt', compileNow);
+    add('操作', '重命名当前 Pass…', '', 'code', function () {
+      const p = selectedPass();
+      if (!p) return;
+      SL.ui.prompt({ title: '重命名 Pass', label: '名称', value: p.name, okLabel: '保存' }).then(function (v) {
+        if (v == null || !String(v).trim()) return;
+        p.name = String(v).trim();
+        if (App.doc.selectedPassId === p.id) $('#editor-title').textContent = p.name;
+        renderPipeline();
+        setDirty();
+      });
+    });
+    add('操作', '启用 / 停用当前 Pass', 'Ctrl+E', 'eye', function () { togglePass(selectedPass()); });
+    add('操作', '复制当前 Pass', 'Ctrl+D', 'copy', function () { duplicatePass(selectedPass()); });
+    add('操作', '导出当前 Pass 为 PNG', '', 'download', function () { exportPassImage(selectedPass()); });
+    add('操作', '编辑器字号 +', 'Ctrl++', 'code', function () { bumpFont(0.5); });
+    add('操作', '编辑器字号 −', 'Ctrl+-', 'code', function () { bumpFont(-0.5); });
+    add('操作', '截屏保存 PNG', '', 'camera', function () { $('#btn-shot').click(); });
+    add('操作', '导出工程 JSON', 'Ctrl+S', 'download', function () { $('#btn-save').click(); });
+    add('操作', '打开工程…', '', 'upload', function () { $('#btn-open').click(); });
+    add('操作', '导入图片…', '', 'image', function () { pickImages(); });
+    add('操作', '快捷键与说明', '?', 'keyboard', openHelp);
+    add('操作', '跳到行…', 'Ctrl+G', 'code', promptGoto);
+    if (App.doc && App.doc.viewPassId) {
+      add('操作', '清除中间 Pass 查看', '', 'eye', function () {
+        App.doc.viewPassId = null; App.needsRender = true; renderPipeline(); syncResolutionLabel();
+      });
+    }
+
+    (SL.presets.list || []).forEach(function (p) {
+      add('预设', p.name, '', 'grid', function () {
+        const sel = $('#preset-select');
+        sel.value = p.id;
+        sel.dispatchEvent(new Event('change', { bubbles: true }));
+      }, p.desc || '');
+    });
+
+    (App.doc ? App.doc.passes : []).forEach(function (p, i) {
+      add('Pass', (i + 1) + ' · ' + (p.name || 'Pass'), p.enabled === false ? '已停用' : '', 'code', function () {
+        selectPass(p.id);
+      });
+    });
+
+    (App.assets ? App.assets.items : []).forEach(function (a) {
+      add('输入图', a.name, a.width + '×' + a.height, 'image', function () {
+        App.doc.source = a.id;
+        App.needsRender = true;
+        renderInspector();
+        setDirty();
+      });
+    });
+
+    return out;
+  }
+
+  function openCmdk() {
+    if (cmdkEl) { closeCmdk(); return; }
+    cmdkAll = cmdkEntries();
+    cmdkSel = 0;
+
+    const panel = SL.h('div', { class: 'cmdk-panel', role: 'dialog', 'aria-modal': 'true', 'aria-label': '命令面板' },);
+    const row = SL.h('div', { class: 'cmdk-input-row' });
+    row.appendChild(SL.h('span', { class: 'ic', html: SL.icon('search', 14) }));
+    cmdkInput = SL.h('input', {
+      class: 'cmdk-input', type: 'text', placeholder: '搜索命令、预设、Pass、贴图…',
+      'aria-label': '搜索命令', autocomplete: 'off', spellcheck: 'false'
+    });
+    row.appendChild(cmdkInput);
+    row.appendChild(SL.h('span', { class: 'hint', text: 'Esc' }));
+    panel.appendChild(row);
+
+    cmdkListEl = SL.h('div', { class: 'cmdk-list', role: 'listbox' });
+    panel.appendChild(cmdkListEl);
+
+    const foot = SL.h('div', { class: 'cmdk-foot' });
+    foot.innerHTML = '<span><kbd>↑</kbd><kbd>↓</kbd> 选择</span><span><kbd>↵</kbd> 执行</span><span><kbd>Esc</kbd> 关闭</span>';
+    panel.appendChild(foot);
+
+    const backdrop = SL.h('div', { class: 'cmdk-backdrop' });
+    cmdkEl = SL.h('div', { id: 'cmdk' }, backdrop, panel);
+    document.body.appendChild(cmdkEl);
+
+    backdrop.addEventListener('click', closeCmdk);
+    cmdkInput.addEventListener('input', function () { renderCmdkList(cmdkInput.value); });
+    cmdkInput.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') { e.preventDefault(); closeCmdk(); }
+      else if (e.key === 'ArrowDown') { e.preventDefault(); moveCmdkSel(1); }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); moveCmdkSel(-1); }
+      else if (e.key === 'Enter') { e.preventDefault(); runCmdkSel(); }
+      else if (e.key === 'Tab') { e.preventDefault(); moveCmdkSel(e.shiftKey ? -1 : 1); }
+    });
+
+    renderCmdkList('');
+    requestAnimationFrame(function () { cmdkInput.focus(); });
+  }
+
+  function closeCmdk() {
+    if (!cmdkEl) return;
+    cmdkEl.remove();
+    cmdkEl = null;
+    cmdkInput = null;
+    cmdkListEl = null;
+    cmdkRows = [];
+    $('#btn-cmdk') && $('#btn-cmdk').focus({ preventScroll: true });
+  }
+
+  function renderCmdkList(query) {
+    if (!cmdkListEl) return;
+    const q = String(query || '').trim().toLowerCase();
+    const hits = cmdkAll.filter(function (it) {
+      if (!q) return true;
+      return (it.label + ' ' + it.group + ' ' + it.desc).toLowerCase().indexOf(q) >= 0;
+    });
+    cmdkRows = hits;
+    cmdkListEl.innerHTML = '';
+    if (!hits.length) {
+      cmdkListEl.appendChild(SL.h('div', { class: 'cmdk-empty', text: '没有匹配项' }));
+      return;
+    }
+    if (cmdkSel >= hits.length) cmdkSel = 0;
+    let group = '';
+    hits.forEach(function (it, i) {
+      if (it.group !== group) {
+        group = it.group;
+        cmdkListEl.appendChild(SL.h('div', { class: 'cmdk-group', text: group }));
+      }
+      const el = SL.h('div', {
+        class: 'cmdk-item' + (i === cmdkSel ? ' active' : ''),
+        role: 'option',
+        'aria-selected': i === cmdkSel ? 'true' : 'false'
+      });
+      el.appendChild(SL.h('span', { class: 'ic', html: SL.icon(it.icon, 13) }));
+      el.appendChild(SL.h('span', { class: 't', text: it.label }));
+      if (it.desc) el.appendChild(SL.h('span', { class: 'd', text: it.desc }));
+      if (it.hint) el.appendChild(SL.h('span', { class: 'hint', text: it.hint }));
+      el.addEventListener('mouseenter', function () {
+        cmdkSel = i;
+        highlightCmdkSel();
+      });
+      el.addEventListener('click', function () { cmdkSel = i; runCmdkSel(); });
+      cmdkListEl.appendChild(el);
+    });
+    highlightCmdkSel();
+  }
+
+  function highlightCmdkSel() {
+    if (!cmdkListEl) return;
+    const items = cmdkListEl.querySelectorAll('.cmdk-item');
+    items.forEach(function (el, i) {
+      el.classList.toggle('active', i === cmdkSel);
+      el.setAttribute('aria-selected', i === cmdkSel ? 'true' : 'false');
+      if (i === cmdkSel) {
+        const top = el.offsetTop - cmdkListEl.clientHeight / 2 + el.offsetHeight / 2;
+        if (Math.abs(top - cmdkListEl.scrollTop) > 4) cmdkListEl.scrollTop = Math.max(0, top);
+      }
+    });
+  }
+
+  function moveCmdkSel(dir) {
+    if (!cmdkRows.length) return;
+    cmdkSel = (cmdkSel + dir + cmdkRows.length) % cmdkRows.length;
+    highlightCmdkSel();
+  }
+
+  function runCmdkSel() {
+    const it = cmdkRows[cmdkSel];
+    if (!it) return;
+    closeCmdk();
+    // 让命令在下一帧跑，避免焦点还卡在已移除的输入框上
+    setTimeout(function () {
+      try { it.run(); } catch (err) { SL.ui.toast('执行失败：' + (err && err.message || err), 'bad'); }
+    }, 0);
   }
 
   function openHelp() {
@@ -1743,14 +2306,27 @@ window.SL = window.SL || {};
       '</ul>',
       '<p>再声明一个 <code>uniform vec2 u_texSize;</code> 就能自动拿到所绑定纹理的尺寸。</p>',
       '<h3>快捷键</h3>',
-      '<table>',
+      '<table class="keys-grid">',
+      '<tr><td><kbd>Ctrl</kbd>+<kbd>K</kbd></td><td>命令面板：搜命令 / 预设 / Pass / 贴图</td></tr>',
       '<tr><td><kbd>Space</kbd></td><td>播放 / 暂停</td></tr>',
-      '<tr><td><kbd>→</kbd></td><td>单帧步进</td></tr>',
+      '<tr><td><kbd>→</kbd> <kbd>←</kbd></td><td>单帧前进 / 后退</td></tr>',
       '<tr><td><kbd>R</kbd></td><td>时间归零</td></tr>',
-      '<tr><td><kbd>F</kbd></td><td>适应窗口</td></tr>',
+      '<tr><td><kbd>F</kbd> / <kbd>0</kbd> / 双击预览</td><td>适应窗口 / 100% / 适应窗口</td></tr>',
+      '<tr><td><kbd>B</kbd> 或按住 <kbd>\\</kbd></td><td>对比原始输入图</td></tr>',
+      '<tr><td><kbd>Z</kbd></td><td>专注模式（只留预览，<kbd>Esc</kbd> 退出）</td></tr>',
+      '<tr><td><kbd>[</kbd> <kbd>]</kbd></td><td>上一个 / 下一个 Pass</td></tr>',
+      '<tr><td><kbd>N</kbd> / <kbd>Ctrl</kbd>+<kbd>D</kbd></td><td>新增 Pass / 复制当前 Pass</td></tr>',
+      '<tr><td><kbd>Ctrl</kbd>+<kbd>E</kbd> / <kbd>Del</kbd></td><td>启用或停用 / 删除当前 Pass</td></tr>',
+      '<tr><td><kbd>Ctrl</kbd>+<kbd>↑</kbd> <kbd>↓</kbd></td><td>上移 / 下移当前 Pass</td></tr>',
+      '<tr><td><kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd></td><td>切到 Uniforms / 纹理 / 信息</td></tr>',
       '<tr><td><kbd>Ctrl</kbd>+<kbd>↵</kbd></td><td>立即编译</td></tr>',
       '<tr><td><kbd>Ctrl</kbd>+<kbd>S</kbd></td><td>导出工程 JSON</td></tr>',
+      '<tr><td><kbd>Ctrl</kbd>+<kbd>G</kbd></td><td>跳到行</td></tr>',
+      '<tr><td><kbd>Ctrl</kbd>+<kbd>+</kbd> / <kbd>-</kbd></td><td>编辑器字号</td></tr>',
+      '<tr><td><kbd>Shift</kbd>+拖动滑块</td><td>方向键微调（1/10 步长）</td></tr>',
+      '<tr><td>双击参数名</td><td>复位这个参数</td></tr>',
       '<tr><td>滚轮 / 中键拖动</td><td>缩放 / 平移预览</td></tr>',
+      '<tr><td><kbd>Shift</kbd>+点击预览</td><td>复制该点颜色</td></tr>',
       '</table>',
       '<h3>保存</h3>',
       '<p>所有改动会自动存进浏览器本地（IndexedDB）。换机器或备份用顶栏的导出/导入 JSON；建议定期导出一份。</p>'

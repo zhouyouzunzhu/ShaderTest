@@ -89,7 +89,8 @@ window.SL = window.SL || {};
         tab: 'uniforms',
         leftW: null,
         rightW: null,
-        editorH: null
+        editorH: null,
+        editorFont: 12.5
       }
     };
   }
@@ -216,7 +217,11 @@ window.SL = window.SL || {};
       tab: ['uniforms', 'textures', 'info'].indexOf(ui.tab) >= 0 ? ui.tab : 'uniforms',
       leftW: clampInt(ui.leftW, null, 180, 520),
       rightW: clampInt(ui.rightW, null, 240, 620),
-      editorH: clampInt(ui.editorH, null, 0, 900)
+      editorH: clampInt(ui.editorH, null, 0, 900),
+      editorFont: (function () {
+        const f = Number(ui.editorFont);
+        return isFinite(f) ? Math.min(22, Math.max(10, Math.round(f * 2) / 2)) : 12.5;
+      })()
     };
 
     return out;

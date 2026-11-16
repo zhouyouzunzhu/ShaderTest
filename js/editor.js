@@ -17,9 +17,11 @@ window.SL = window.SL || {};
       this.pre = opt.pre;
       this.gutter = opt.gutter;
       this.errRows = opt.errRows;
+      this.curLine = opt.curLine || null;
       this.onChange = opt.onChange || function () {};
       this.onCompile = opt.onCompile || function () {};
       this.onCursor = opt.onCursor || function () {};
+      this.fontPx = opt.fontSize || 12.5;
 
       this.lh = 20;
       this.padTop = 10;
@@ -43,6 +45,33 @@ window.SL = window.SL || {};
       // 让行号栏使用同一行高
       this.gutter.style.lineHeight = this.lh + 'px';
       this.gutter.style.paddingTop = this.padTop + 'px';
+      this.drawCursorLine();
+    }
+
+    /** 改字号：同时缩放行高，重排所有叠加层 */
+    setFontSize(px) {
+      const size = SL.clamp(Math.round(px * 2) / 2, 10, 22);
+      this.fontPx = size;
+      const lh = Math.round(size * 1.6);
+      const root = document.documentElement;
+      root.style.setProperty('--code-size', size + 'px');
+      root.style.setProperty('--code-lh', lh + 'px');
+      this.measure();
+      this.updateHighlight(true);
+      this.updateGutter(true);
+      this.setErrors(this._errors);
+      return size;
+    }
+
+    /* --------------------------- 当前行高亮 --------------------------- */
+    drawCursorLine() {
+      const el = this.curLine;
+      if (!el) return;
+      const pos = this.ta.selectionStart;
+      if (this.ta.selectionStart !== this.ta.selectionEnd) { el.style.display = 'none'; return; }
+      const line = this.ta.value.slice(0, pos).split('\n').length;
+      el.style.display = 'block';
+      el.style.top = (this.padTop + (line - 1) * this.lh - this.ta.scrollTop) + 'px';
     }
 
     /* -------------------------------- 事件 -------------------------------- */
@@ -224,9 +253,9 @@ window.SL = window.SL || {};
       });
     }
 
-    updateGutter() {
+    updateGutter(force) {
       const n = this.ta.value.split('\n').length;
-      if (n === this.lastLineCount) return;
+      if (n === this.lastLineCount && !force) return;
       this.lastLineCount = n;
       let html = '';
       for (let i = 1; i <= n; i++) html += '<div class="gl" data-line="' + i + '">' + i + '</div>';
@@ -252,6 +281,7 @@ window.SL = window.SL || {};
       if (this.errRows && this.errRows.parentNode) {
         this.errRows.parentNode.scrollTop = ta.scrollTop;
       }
+      this.drawCursorLine();
     }
 
     /* ------------------------------- 错误标记 ------------------------------- */
@@ -299,6 +329,7 @@ window.SL = window.SL || {};
       const before = this.ta.value.slice(0, pos);
       const line = before.split('\n').length;
       const col = pos - before.lastIndexOf('\n');
+      this.drawCursorLine();
       this.onCursor(line, col, this.ta.value.length);
     }
 

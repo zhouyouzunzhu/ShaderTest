@@ -101,8 +101,10 @@ window.SL = window.SL || {};
       this.caps.maxDrawBuffers = gl.getParameter(gl.MAX_DRAW_BUFFERS);
 
       // GPU 计时（Chrome 支持；不支持时退回 CPU 提交耗时）
+      // 逐 Pass 各发一个查询，既拿到总数也能看到每个 Pass 的开销
       this.timer = gl.getExtension('EXT_disjoint_timer_query_webgl2');
-      this.gpuQueries = [];
+      this.passQueries = [];
+      this.passMs = {};
       this.gpuMs = 0;
       this.gpuMeasured = false;
 
@@ -411,11 +413,6 @@ window.SL = window.SL || {};
       if (!this.ok) return { ms: 0, drawn: 0, skipped: 0, finalTex: null };
       this.pollGpuTimer();
       const t0 = performance.now();
-      let q = null;
-      if (this.timer) {
-        q = gl.createQuery();
-        try { gl.beginQuery(this.timer.TIME_ELAPSED_EXT, q); } catch (e) { q = null; }
-      }
       const W = Math.max(1, state.output.w | 0);
       const H = Math.max(1, state.output.h | 0);
       if (this.canvas.width !== W || this.canvas.height !== H) {
@@ -424,7 +421,32 @@ window.SL = window.SL || {};
       }
       this.frame++;
 
+      // 对比模式：跳过整条管线，直接把原始输入贴到画布，
+      // 用来一眼判断「算法到底改了什么」。
+      if (state.compare) {
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        gl.viewport(0, 0, W, H);
+        gl.clearColor(0, 0, 0, 1);
+        gl.clear(gl.COLOR_BUFFER_BIT);
+        if (env.source) {
+          gl.useProgram(this.blitProg);
+          gl.activeTexture(gl.TEXTURE0);
+          gl.bindTexture(gl.TEXTURE_2D, env.source.tex);
+          gl.uniform1i(this.blitTexLoc, 0);
+          gl.bindVertexArray(this.vao);
+          gl.drawArrays(gl.TRIANGLES, 0, 3);
+          gl.bindVertexArray(null);
+        }
+        const cms = performance.now() - t0;
+        return { ms: cms, gpu: false, cpuMs: cms, drawn: 0, skipped: 0, finalTex: null, compare: true };
+      }
+
       const passes = state.passes.filter((p) => p.enabled);
+
+      // 已删除的 Pass 不再保留计时样本
+      for (const id in this.passMs) {
+        if (!state.passes.some((p) => p.id === id)) delete this.passMs[id];
+      }
       this.pruneTargets(state.passes.map((p) => p.id));
       const outputs = {}; // passId → {tex,w,h}
       let prevOut = env.source || null;
@@ -492,6 +514,12 @@ window.SL = window.SL || {};
         gl.useProgram(entry.program);
         gl.bindVertexArray(this.vao);
 
+        let pq = null;
+        if (this.timer) {
+          pq = gl.createQuery();
+          try { gl.beginQuery(this.timer.TIME_ELAPSED_EXT, pq); } catch (e) { pq = null; }
+        }
+
         const date = env.date || [1970, 0, 1, 0];
         const ctx = {
           time: state.time, delta: env.delta || 0, frame: env.frame || 0,
@@ -505,6 +533,13 @@ window.SL = window.SL || {};
         this.applyUniforms(entry, ctx);
         gl.drawArrays(gl.TRIANGLES, 0, 3);
         gl.bindVertexArray(null);
+
+        if (pq) {
+          try {
+            gl.endQuery(this.timer.TIME_ELAPSED_EXT);
+            this.passQueries.push({ q: pq, id: p.id });
+          } catch (e) { /* 查询被丢弃不影响渲染 */ }
+        }
 
         if (needsSelf) rt.cur = dstSlot;
         const out = { tex: dst.tex, w: pw, h: ph };
@@ -533,44 +568,51 @@ window.SL = window.SL || {};
         gl.drawArrays(gl.TRIANGLES, 0, 3);
         gl.bindVertexArray(null);
       }
-      if (q) {
-        try {
-          gl.endQuery(this.timer.TIME_ELAPSED_EXT);
-          this.gpuQueries.push(q);
-        } catch (e) { /* 查询被丢弃不影响渲染 */ }
-      }
       const cpuMs = performance.now() - t0;
+
+      // 总 GPU 耗时 = 各 Pass 实测之和（最后的 blit 只画一个全屏三角形，忽略不计）
+      let sum = 0, measured = 0;
+      for (let i = 0; i < passes.length; i++) {
+        const v = this.passMs[passes[i].id];
+        if (v != null) { sum += v; measured++; }
+      }
+      if (measured) { this.gpuMs = sum; this.gpuMeasured = true; }
       return {
-        ms: this.gpuMeasured ? this.gpuMs : cpuMs,
-        gpu: this.gpuMeasured,
+        ms: measured ? sum : cpuMs,
+        gpu: measured > 0,
         cpuMs: cpuMs,
-        drawn: drawn, skipped: skipped, finalTex: finalTex
+        drawn: drawn, skipped: skipped, finalTex: finalTex,
+        passMs: this.passMs
       };
     }
 
-    /** 轮询已完成的 GPU 计时查询，结果异步到达，取最近一次成功的样本 */
+    /** 轮询已完成的 GPU 计时查询，结果异步到达，按 Pass id 归位 */
     pollGpuTimer() {
       const t = this.timer;
-      if (!t || !this.gpuQueries.length) return;
+      if (!t || !this.passQueries.length) return;
       const gl = this.gl;
       let disjoint = false;
-      try { disjoint = !!gl.getParameter(this.timer.GPU_DISJOINT_EXT); } catch (e) { disjoint = false; }
-      while (this.gpuQueries.length) {
-        const q = this.gpuQueries[0];
-        let ready = false;
-        try { ready = !!gl.getQueryParameter(q, gl.QUERY_RESULT_AVAILABLE); } catch (e) { ready = true; }
-        if (!ready) break;
-        if (!disjoint) {
-          try {
-            this.gpuMs = gl.getQueryParameter(q, gl.QUERY_RESULT) / 1e6;
-            this.gpuMeasured = true;
-          } catch (e) { /* 忽略单次失败 */ }
+      try { disjoint = !!gl.getParameter(t.GPU_DISJOINT_EXT); } catch (e) { disjoint = false; }
+      if (disjoint) {
+        // 计时器被别的上下文扰动，这一批样本全部不可信
+        while (this.passQueries.length) {
+          const it = this.passQueries.shift();
+          try { gl.deleteQuery(it.q); } catch (e) { /* 忽略 */ }
         }
-        try { gl.deleteQuery(q); } catch (e) { /* 忽略 */ }
-        this.gpuQueries.shift();
+        return;
       }
-      while (this.gpuQueries.length > 8) {
-        try { gl.deleteQuery(this.gpuQueries.shift()); } catch (e) { /* 忽略 */ }
+      while (this.passQueries.length) {
+        const it = this.passQueries[0];
+        let ready = false;
+        try { ready = !!gl.getQueryParameter(it.q, gl.QUERY_RESULT_AVAILABLE); } catch (e) { ready = true; }
+        if (!ready) break;
+        try { this.passMs[it.id] = gl.getQueryParameter(it.q, gl.QUERY_RESULT) / 1e6; } catch (e) { /* 忽略单次失败 */ }
+        try { gl.deleteQuery(it.q); } catch (e) { /* 忽略 */ }
+        this.passQueries.shift();
+      }
+      while (this.passQueries.length > 32) {
+        const it = this.passQueries.shift();
+        try { gl.deleteQuery(it.q); } catch (e) { /* 忽略 */ }
       }
     }
 

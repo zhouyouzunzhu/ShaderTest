@@ -15,7 +15,7 @@ window.SL = window.SL || {};
   }
 
   /** 每个 pass 的标签行 */
-  function tagsFor(pass, uniforms) {
+  function tagsFor(pass, uniforms, gpuMs) {
     const wrap = SL.h('div', { class: 'pass-tags' });
     if (pass.format === 'hdr') wrap.appendChild(tag('HDR', 'hdr', 'RGBA16F 浮点缓冲'));
     else wrap.appendChild(tag('8bit', '', 'RGBA8 缓冲'));
@@ -25,6 +25,9 @@ window.SL = window.SL || {};
     const v = pass.values || {};
     const keys = Object.keys(v);
     if (keys.length) wrap.appendChild(tag(keys.length + ' 参数', 'param', keys.length + ' 个可调参数'));
+    if (gpuMs != null && pass.enabled !== false) {
+      wrap.appendChild(tag(SL.fmt(gpuMs, 2) + 'ms', 'time', '该 Pass 的 GPU 耗时（EXT_disjoint_timer_query）'));
+    }
     return wrap;
   }
 
@@ -68,7 +71,7 @@ window.SL = window.SL || {};
       const main = SL.h('div', { class: 'pass-main' });
       const nameEl = SL.h('div', { class: 'pass-name', text: pass.name || ('Pass ' + (i + 1)) });
       main.appendChild(nameEl);
-      main.appendChild(tagsFor(pass, ctx.uniformsOf ? ctx.uniformsOf(pass.id) : null));
+      main.appendChild(tagsFor(pass, ctx.uniformsOf ? ctx.uniformsOf(pass.id) : null, ctx.passMs && ctx.passMs[pass.id]));
       item.appendChild(main);
 
       if (errs.length) {

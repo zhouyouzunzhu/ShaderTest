@@ -88,9 +88,32 @@ window.SL = window.SL || {};
       value: value, 'aria-label': u.label + (comp ? ' ' + comp : '')
     });
     inp.style.setProperty('--p', SL.clamp(pct, 0, 100) + '%');
+    // 聚焦时放开 step：否则细调值会被浏览器按 step 吸附回去
+    inp.addEventListener('focus', function () {
+      inp.dataset.baseStep = inp.step;
+      inp.step = 'any';
+    });
+    inp.addEventListener('blur', function () {
+      if (inp.dataset.baseStep) inp.step = inp.dataset.baseStep;
+    });
     inp.addEventListener('input', function () {
       let v = parseFloat(inp.value);
       if (u.kind === 'int') v = Math.round(v);
+      inp.style.setProperty('--p', SL.clamp(((v - r.min) / (r.max - r.min || 1)) * 100, 0, 100) + '%');
+      onChange(v);
+    });
+    // 按住 Shift 用方向键微调（1/10 步长），细调参数时不用来回点数值框
+    inp.addEventListener('keydown', function (e) {
+      if (!e.shiftKey) return;
+      let dir = 0;
+      if (e.key === 'ArrowRight' || e.key === 'ArrowUp') dir = 1;
+      else if (e.key === 'ArrowLeft' || e.key === 'ArrowDown') dir = -1;
+      if (!dir) return;
+      e.preventDefault();
+      const cur = parseFloat(inp.value);
+      let v = SL.clamp(cur + dir * (r.step / 10), r.min, r.max);
+      if (u.kind === 'int') v = Math.round(v);
+      inp.value = v;
       inp.style.setProperty('--p', SL.clamp(((v - r.min) / (r.max - r.min || 1)) * 100, 0, 100) + '%');
       onChange(v);
     });
@@ -104,15 +127,26 @@ window.SL = window.SL || {};
   }
 
   /* ------------------------------- 行渲染 ------------------------------- */
-  function renderRow(u, pass, ctx) {
+  function renderRow(u, pass, ctx, rerender) {
     const values = pass.values[u.name] || (pass.values[u.name] = defaultFor(u));
     const label = (u.ann && u.ann.label) || u.name;
     const row = SL.h('div', { class: 'uni-row' });
     const top = SL.h('div', { class: 'uni-top' });
-    const nameEl = SL.h('div', { class: 'uni-name', title: u.name + ' : ' + u.type + (u.line ? '  (第 ' + u.line + ' 行)' : '') });
+    const nameEl = SL.h('div', {
+      class: 'uni-name',
+      title: u.name + ' : ' + u.type + (u.line ? '  (第 ' + u.line + ' 行)' : '') + '  ·  双击复位'
+    });
     nameEl.appendChild(SL.h('span', { text: label }));
     if (label !== u.name) nameEl.appendChild(SL.h('span', { class: 'type', text: u.name }));
     else nameEl.appendChild(SL.h('span', { class: 'type', text: u.type }));
+    // 双击名字 = 把这个参数复位到注解里的默认值
+    nameEl.addEventListener('dblclick', function () {
+      if (u.kind === 'mat') return;
+      const vals = defaultFor(u);
+      ctx.pass.values[u.name] = vals;
+      ctx.onValueChange(u.name, vals);
+      if (rerender) rerender();
+    });
     const valEl = SL.h('div', { class: 'uni-val', title: '点击直接输入数值' });
     top.appendChild(nameEl);
     top.appendChild(valEl);
@@ -345,6 +379,12 @@ window.SL = window.SL || {};
     const samplers = uniforms.filter(function (u) { return u.kind === 'sampler'; });
     init(ctx.pass, uniforms);
 
+    // 面板内改完一整批值后重画（优先用外部刷新，避免丢掉滚动位置以外的状态）
+    const rerender = function () {
+      if (ctx.onRefresh) ctx.onRefresh();
+      else render(host, ctx);
+    };
+
     // 自动 uniform 提示
     const autos = usedAuto(ctx.src || '');
     if (autos.length) {
@@ -363,7 +403,68 @@ window.SL = window.SL || {};
     const head = SL.h('div', { class: 'insp-head' });
     head.appendChild(SL.h('span', { text: '参数' }));
     head.appendChild(SL.h('span', { class: 'count', text: String(params.length) }));
+    if (params.length) {
+      const tools = SL.h('div', { class: 'insp-tools' });
+      const dice = SL.h('button', {
+        class: 'tool-btn', title: '随机一组参数（R）', 'aria-label': '随机参数',
+        html: SL.icon('dice', 12)
+      });
+      dice.addEventListener('click', function () {
+        params.forEach(function (u) {
+          if (u.kind === 'mat' || (u.ann && u.ann.hidden)) return;
+          const r = rangeFor(u);
+          const cnt = COMP[u.kind] || 1;
+          const vals = [];
+          for (let i = 0; i < cnt; i++) {
+            let v = r.min + Math.random() * (r.max - r.min);
+            if (u.kind === 'int' || u.kind === 'bool') v = Math.round(v);
+            vals.push(+v.toFixed(4));
+          }
+          ctx.pass.values[u.name] = vals;
+          ctx.onValueChange(u.name, vals);
+        });
+        rerender();
+      });
+      const reset = SL.h('button', {
+        class: 'tool-btn', title: '全部复位为默认值', 'aria-label': '复位参数',
+        html: SL.icon('reset', 12)
+      });
+      reset.addEventListener('click', function () {
+        params.forEach(function (u) {
+          const vals = defaultFor(u);
+          ctx.pass.values[u.name] = vals;
+          ctx.onValueChange(u.name, vals);
+        });
+        rerender();
+      });
+      tools.appendChild(dice);
+      tools.appendChild(reset);
+      head.appendChild(tools);
+    }
     sec.appendChild(head);
+
+    // 参数多了给一个就地筛选框（按名字或显示名）
+    const rows = [];
+    let filterEl = null;
+    if (params.length > 5) {
+      filterEl = SL.h('input', {
+        class: 'uni-filter', type: 'search', placeholder: '筛选参数…（' + params.length + '）',
+        'aria-label': '筛选参数'
+      });
+      const empty = SL.h('div', { class: 'uni-filter-empty', text: '没有匹配的参数', style: 'display:none' });
+      filterEl.addEventListener('input', function () {
+        const q = filterEl.value.trim().toLowerCase();
+        let shown = 0;
+        rows.forEach(function (r) {
+          const hit = !q || r.key.indexOf(q) >= 0;
+          r.el.style.display = hit ? '' : 'none';
+          if (hit) shown++;
+        });
+        empty.style.display = shown ? 'none' : '';
+      });
+      sec.appendChild(filterEl);
+      sec.appendChild(empty);
+    }
     if (!params.length) {
       sec.appendChild(SL.h('div', {
         class: 'insp-empty',
@@ -380,7 +481,9 @@ window.SL = window.SL || {};
     } else {
       params.forEach(function (u) {
         if (u.ann && u.ann.hidden) return;
-        sec.appendChild(renderRow(u, ctx.pass, ctx));
+        const row = renderRow(u, ctx.pass, ctx, rerender);
+        rows.push({ el: row, key: (((u.ann && u.ann.label) || u.name) + ' ' + u.name).toLowerCase() });
+        sec.appendChild(row);
       });
     }
     host.appendChild(sec);

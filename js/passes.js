@@ -520,7 +520,7 @@ void main() {
     return out;
   }
 
-  const LIST = [
+  const BASE = [
     /* 中间态：不读输入，自己生成一张图 */
     {
       id: 'gen-perlin', name: '柏林噪声', group: '生成', role: 'source',
@@ -636,7 +636,24 @@ void main() {
     }
   ];
 
-  const GROUPS = ['生成', '调色', '模糊', '提取', '合成', '风格化', '扭曲'];
+  /* --------------------------- 扩展模板（同文件外挂） --------------------------- */
+  // js/passes-extra.js 里只写 {id,name,group,role,desc,code[,bindings]}，这里统一补默认值。
+
+  function normExtra(t) {
+    const src = t.role === 'source' ? t.code : 'uniform sampler2D u_tex;\n' + t.code;
+    return {
+      id: t.id,
+      name: t.name,
+      group: t.group || '其他',
+      role: t.role === 'source' ? 'source' : 'filter',
+      desc: t.desc || '',
+      pass: p(t.name, src, t.bindings ? { bindings: t.bindings } : null)
+    };
+  }
+
+  const EXTRA = (window.SL_PASSES_EXTRA || []).map(normExtra);
+  const LIST = BASE.concat(EXTRA);
+  const GROUPS = ['生成', '调色', '颜色', '模糊', '提取', '边缘', '合成', '风格化', '图案', '扭曲', '故障'];
 
   /* --------------------------- 用户自己存的模板 --------------------------- */
   /* 存在浏览器本地（localStorage），不写进仓库；「存为 Pass」按钮往里加 */

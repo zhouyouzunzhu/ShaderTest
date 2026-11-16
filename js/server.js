@@ -54,6 +54,20 @@
     },
 
     getDoc: function () { return req('GET', '/api/doc').then(function (d) { return d.doc || null; }); },
-    putDoc: function (doc) { return req('PUT', '/api/doc', { doc: doc }); }
+    putDoc: function (doc) { return req('PUT', '/api/doc', { doc: doc }); },
+
+    /** 订阅磁盘变更（SSE）：cb 收到 kinds 数组，例如 ['effects'] / ['passes','library'] */
+    watch: function (cb) {
+      if (!SL.server.on || typeof EventSource !== 'function') return null;
+      const es = new EventSource('/api/events');
+      es.onmessage = function (e) {
+        let msg = null;
+        try { msg = JSON.parse(e.data); } catch (err) { return; }
+        if (!msg || !msg.kinds) return;
+        const kinds = msg.kinds.filter(function (k) { return k !== 'hello'; });
+        if (kinds.length) cb(kinds);
+      };
+      return es;
+    }
   };
 })();

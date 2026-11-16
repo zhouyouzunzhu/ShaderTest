@@ -118,11 +118,53 @@ window.SL = window.SL || {};
     App.needsRender = true;
     if (!App.engine.ok) return;
     requestAnimationFrame(loop);
+    bindServerWatch();
     if (SL.test && SL.test.autoRun) runSelfTest();
     if (App.__fresh) {
       setTimeout(function () {
         SL.ui.toast('按 Ctrl+K 打开命令面板，? 看快捷键', 'info');
       }, 700);
+    }
+  }
+
+  /* -------------------------- 服务模式：改文件自动刷 -------------------------- */
+  let watchTimer = null;
+  const watchKinds = {};
+
+  function bindServerWatch() {
+    if (!(window.SL.server && SL.server.on)) return;
+    SL.server.watch(function (kinds) {
+      kinds.forEach(function (k) { watchKinds[k] = true; });
+      if (watchTimer) clearTimeout(watchTimer);
+      watchTimer = setTimeout(applyServerChanges, 260);
+    });
+  }
+
+  function applyServerChanges() {
+    watchTimer = null;
+    const kinds = Object.assign({}, watchKinds);
+    Object.keys(watchKinds).forEach(function (k) { delete watchKinds[k]; });
+
+    if (kinds.effects) {
+      reloadEffectIndex().then(function () {
+        fillPresetSelect();
+        if (typeof libraryOpen === 'function' && libraryOpen) {
+          renderLibrary();
+          buildLibraryThumbs();
+        }
+        SL.ui.toast('effect.json / shader 变了，效果库已重载', 'info');
+      });
+    }
+    if (kinds.passes) {
+      SL.passes.sync().then(function () {
+        SL.ui.toast('passes/ 变了，我的 Pass 已更新', 'info');
+      });
+    }
+    if (kinds.library) {
+      App.assets.ensureLibrary(function () {
+        App.needsRender = true;
+        if (App.doc && App.doc.ui.tab === 'textures') renderInspector();
+      });
     }
   }
 

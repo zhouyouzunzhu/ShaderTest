@@ -5,7 +5,7 @@
 
 import { createServer } from 'node:http';
 import { readFile, writeFile, readdir, mkdir, unlink, rename, stat } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, watch } from 'node:fs';
 import { extname, join, normalize, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -35,6 +35,53 @@ const EFFECTS_DIR = join(ROOT, 'effects');
 const DOC_FILE = join(ROOT, 'project.json');
 
 const PASS_ID = /^[a-z0-9][a-z0-9-]{0,63}$/;
+
+/* ------------------------------ 热更新广播 ------------------------------ */
+// 前端用 EventSource('/api/events') 订阅：改了 passes/、library/、effects/ 里的文件，页面自动重载对应库。
+
+const sseClients = new Set();
+let sseTimer = null;
+const pendingKinds = new Set();
+
+function broadcast() {
+  const payload = JSON.stringify({ kinds: Array.from(pendingKinds), at: Date.now() });
+  pendingKinds.clear();
+  for (const res of sseClients) {
+    try { res.write('data: ' + payload + '\n\n'); } catch (e) { sseClients.delete(res); }
+  }
+}
+
+function noteChange(kind) {
+  pendingKinds.add(kind);
+  if (sseTimer) return;
+  sseTimer = setTimeout(function () { sseTimer = null; broadcast(); }, 220);
+}
+
+function watchDir(dir, kind) {
+  try {
+    const w = watch(dir, { recursive: true }, function (evt, file) {
+      if (!file) return;
+      const f = String(file);
+      // 忽略自己写盘时的临时文件与编辑器备份
+      if (/\.tmp-|~$|\.swp$|^\.git/.test(f)) return;
+      noteChange(kind);
+    });
+    w.on('error', function () {});
+    return w;
+  } catch (e) {
+    return null;
+  }
+}
+
+let watchers = null;
+function startWatchers() {
+  if (watchers) return;
+  watchers = [
+    watchDir(PASSES_DIR, 'passes'),
+    watchDir(LIB_DIR, 'library'),
+    watchDir(EFFECTS_DIR, 'effects')
+  ].filter(Boolean);
+}
 
 /* ------------------------------- 小工具 ------------------------------- */
 
@@ -193,6 +240,26 @@ export function createApi() {
     const method = req.method || 'GET';
 
     if (p === '/ping') return sendJSON(res, 200, { ok: true, root: ROOT, version: 1 });
+
+    /* ---- 热更新（SSE） ---- */
+    if (p === '/events') {
+      startWatchers();
+      res.writeHead(200, {
+        'content-type': 'text/event-stream; charset=utf-8',
+        'cache-control': 'no-store',
+        connection: 'keep-alive',
+        'x-accel-buffering': 'no'
+      });
+      res.write('retry: 1500\n\n');
+      res.write('data: ' + JSON.stringify({ kinds: ['hello'], at: Date.now() }) + '\n\n');
+      sseClients.add(res);
+      const ping = setInterval(function () { try { res.write(': ping\n\n'); } catch (e) { /* 断开时由 close 清理 */ } }, 25000);
+      req.on('close', function () {
+        clearInterval(ping);
+        sseClients.delete(res);
+      });
+      return undefined;
+    }
 
     /* ---- passes ---- */
     if (p === '/passes' && method === 'GET') {

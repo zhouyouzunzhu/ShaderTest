@@ -1207,6 +1207,7 @@ window.SL = window.SL || {};
         return {
           id: p.id || ('p' + (i + 1)),
           name: p.name || ('Pass ' + (i + 1)),
+          role: p.role === 'source' ? 'source' : 'filter',
           code: p.code,
           enabled: true,
           format: p.format === 'hdr' ? 'hdr' : 'rgba8',
@@ -1232,7 +1233,8 @@ window.SL = window.SL || {};
         previewBg: App.doc.previewBg || 'checker',
         passes: passes,
         timeline: SL.deepClone(eff.tracks || {}),
-        selectedPassId: passes[0] ? passes[0].id : null,
+        // 打开效果时默认看最终结果：选中最后一个 Pass（中间态是 source 时才不会被选中）
+        selectedPassId: passes.length ? passes[passes.length - 1].id : null,
         assets: SL.deepClone(App.doc.assets || []),
         ui: SL.deepClone(App.doc.ui)
       };

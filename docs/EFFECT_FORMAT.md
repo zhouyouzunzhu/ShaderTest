@@ -80,6 +80,9 @@ node tools/lib.mjs build
 | `format` | `rgba8`（默认）或 `hdr`（RGBA16F，做泛光/加色时用） |
 | `scale` | 0.05–4，内部可以按 1/2 分辨率跑模糊 |
 | `bindings` | 采样器绑定，键是 uniform 名 |
+| `role` | `filter`（默认，读上一个 Pass）或 `source`（中间态：自己生成、不推进主链，只能被「指定 Pass」采样） |
+
+中间态的用法：把生成类 Pass 写成 `"role": "source"`，后面的 Pass 用 `{"kind":"pass","pass":"p1"}` 采样它，这样主链画面不会被它顶掉。`effects/ui-shatter` 就是一个例子（`panel` 是中间态，`shatter` 采样它）。
 
 `bindings` 的 `kind`：
 

@@ -199,6 +199,8 @@ async function loadEffect(dirName, problems, libMap) {
     passes.push({
       id: pid,
       name: p.name || `Pass ${i + 1}`,
+      // source = 中间态（不推进 prev 链，只能被「指定 Pass」采样）；filter = 叠加态
+      role: p.role === 'source' ? 'source' : 'filter',
       code,
       format,
       scale,

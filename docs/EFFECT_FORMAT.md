@@ -91,7 +91,7 @@ node tools/lib.mjs build
 
 ## 写 shader 时能直接用
 
-和预设里的写法完全一样，构建器会自动补 `#version 300 es`、precision、`vUv`、`fragColor`。
+和常见 Pass 里的写法完全一样，构建器会自动补 `#version 300 es`、precision、`vUv`、`fragColor`。
 
 ```glsl
 uniform float u_intensity; // @range 0 3 @step 0.01 @default 1.6 @label 强度

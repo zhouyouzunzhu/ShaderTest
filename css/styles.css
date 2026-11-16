@@ -1081,6 +1081,37 @@ body.zen #preview-note{display:none;}
 /* 透明输出：画布自己不能铺底色，否则挡住 stage 的背景 */
 #preview-stage.alpha #gl{background:transparent;box-shadow:0 0 0 1px rgba(255,255,255,.14);}
 
+/* 常见 Pass 选择器 */
+.pp-wrap{
+  margin:-14px -16px;display:flex;flex-direction:column;
+  height:min(62vh,540px);
+}
+.pp-search{padding:10px 12px;border-bottom:1px solid var(--line);flex:0 0 auto;}
+.pp-search input{
+  width:100%;box-sizing:border-box;background:var(--bg-0);border:1px solid var(--line);
+  border-radius:7px;padding:8px 10px;color:var(--text);
+  font-family:inherit;font-size:12.5px;outline:none;
+}
+.pp-search input:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft);}
+.pp-list{flex:1 1 auto;overflow-y:auto;padding:6px;}
+.pp-group{
+  padding:8px 10px 4px;font-size:10px;letter-spacing:.12em;
+  color:var(--text-4);text-transform:uppercase;font-weight:600;
+}
+.pp-item{display:flex;gap:10px;align-items:flex-start;padding:7px 10px;border-radius:7px;cursor:pointer;}
+.pp-item:hover,.pp-item.active{background:var(--bg-4);}
+.pp-item.active{box-shadow:inset 0 0 0 1px var(--line-strong);}
+.pp-ico{flex:0 0 auto;width:20px;height:20px;display:grid;place-items:center;color:var(--text-3);margin-top:1px;}
+.pp-body{display:flex;flex-direction:column;gap:1px;min-width:0;}
+.pp-name{font-size:12.5px;color:var(--text);display:flex;align-items:center;gap:6px;}
+.pp-tag{
+  font-style:normal;font-size:10px;padding:0 5px;border-radius:4px;
+  background:var(--accent-soft);color:var(--accent);
+}
+.pp-desc{font-size:11px;color:var(--text-4);line-height:1.4;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.pp-empty{padding:22px;text-align:center;color:var(--text-4);font-size:12px;}
+.pp-foot{padding:8px 12px;border-top:1px solid var(--line);font-size:11px;color:var(--text-4);flex:0 0 auto;}
+
 /* 响应式：窄屏收紧左右栏（改的是变量，拖过分隔条后由内联值接管） */
 @media (max-width:1280px){
   :root{--left-w:224px;--right-w:308px;}

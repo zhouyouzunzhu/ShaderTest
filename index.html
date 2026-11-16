@@ -26,7 +26,7 @@
       </span>
       <span class="brand-name">Shader<b>Lab</b></span>
       <span class="brand-sub">GLSL 测试台</span>
-      <button class="cmdk-btn" id="btn-cmdk" title="命令面板：搜索预设 / 命令 / Pass（Ctrl+K）" aria-label="打开命令面板">
+      <button class="cmdk-btn" id="btn-cmdk" title="命令面板：搜索命令 / Pass / 效果（Ctrl+K）" aria-label="打开命令面板">
         <span id="cmdk-btn-ic"></span><span>Ctrl K</span>
       </button>
     </div>
@@ -36,8 +36,8 @@
         <span id="lib-btn-ic"></span><span>效果库</span><span class="lib-btn-count" id="lib-btn-count"></span>
       </button>
       <div class="tb-sep"></div>
-      <label class="preset-field" title="切换内置示例管线 / 效果">
-        <span class="preset-cap">预设</span>
+      <label class="preset-field" title="切换效果库里的效果">
+        <span class="preset-cap">效果</span>
         <select id="preset-select"></select>
       </label>
       <div class="tb-sep"></div>
@@ -73,15 +73,15 @@
         <span class="panel-title">PIPELINE</span>
         <span class="panel-count" id="pass-count">0</span>
         <span class="grow"></span>
-        <button class="ibtn sm" id="btn-add-pass" title="新增 Pass"></button>
+        <button class="ibtn sm" id="btn-add-pass" title="插入常见 Pass（N）"></button>
       </div>
       <div class="panel-scroll" id="pass-scroll">
         <ol id="pass-list" class="pass-list"></ol>
-        <button class="add-pass" id="btn-add-pass-2" title="在选中 Pass 后插入一个（N）">
-          <span class="plus">+</span><span>新增 Pass</span>
+        <button class="add-pass" id="btn-add-pass-2" title="插入常见 Pass（N）">
+          <span class="plus">+</span><span>插入 Pass</span>
         </button>
         <div class="pipeline-tip">
-          点击编辑 · 拖拽调序 · <kbd>[</kbd><kbd>]</kbd> 切换 · <kbd>N</kbd> 新增 · <kbd>Ctrl</kbd>+<kbd>↑↓</kbd> 移动
+          点击编辑 · 拖拽调序 · <kbd>[</kbd><kbd>]</kbd> 切换 · <kbd>N</kbd> 插入 · <kbd>Ctrl</kbd>+<kbd>↑↓</kbd> 移动
         </div>
       </div>
       <div class="panel-foot">
@@ -239,18 +239,18 @@
 <div id="modal-root"></div>
 <div id="ctxmenu" class="ctxmenu hidden"></div>
 
-<script src="js/util.js?v=15"></script>
-<script src="js/glsl.js?v=15"></script>
-<script src="js/assets.js?v=15"></script>
-<script src="js/engine.js?v=15"></script>
-<script src="js/editor.js?v=15"></script>
-<script src="js/uniforms.js?v=15"></script>
-<script src="js/pipeline.js?v=15"></script>
-<script src="js/presets.js?v=15"></script>
+<script src="js/util.js?v=22"></script>
+<script src="js/glsl.js?v=22"></script>
+<script src="js/assets.js?v=22"></script>
+<script src="js/engine.js?v=22"></script>
+<script src="js/editor.js?v=22"></script>
+<script src="js/uniforms.js?v=22"></script>
+<script src="js/pipeline.js?v=22"></script>
+<script src="js/passes.js?v=22"></script>
 <!-- 效果库 / 公共图库：由 node tools/lib.mjs build 生成，缺文件时页面照常可用 -->
-<script src="effects/index.js?v=15"></script>
-<script src="library/index.js?v=15"></script>
-<script src="js/store.js?v=15"></script>
-<script src="js/app.js?v=15"></script>
+<script src="effects/index.js?v=22"></script>
+<script src="library/index.js?v=22"></script>
+<script src="js/store.js?v=22"></script>
+<script src="js/app.js?v=22"></script>
 </body>
 </html>

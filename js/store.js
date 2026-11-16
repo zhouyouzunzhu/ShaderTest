@@ -69,22 +69,23 @@ window.SL = window.SL || {};
   }
 
   /* ------------------------------ 默认文档 ------------------------------ */
-  function defaultState(presetId) {
-    const p = SL.presets.get(presetId || SL.presets.ids[0]);
+  function defaultState() {
+    // 没有「整条效果的预设」了：默认就是一条最朴素的起步管线
+    const doc = SL.passes.defaultDoc();
     return {
       v: 1,
-      presetId: p.id,
+      presetId: '',
       custom: false,
-      source: p.source || SL.assetDefaults.testcard,
-      output: { w: p.output.w, h: p.output.h },
+      source: doc.source || SL.assetDefaults.testcard,
+      output: { w: doc.output.w, h: doc.output.h },
       resMode: 'fit',
       effectId: null,
       alpha: false,
       duration: 0,
       loop: true,
       previewBg: 'checker',
-      passes: p.passes,
-      selectedPassId: p.passes[0] ? p.passes[0].id : null,
+      passes: doc.passes,
+      selectedPassId: doc.passes[0] ? doc.passes[0].id : null,
       viewPassId: null,
       assets: [],
       ui: {
@@ -106,10 +107,9 @@ window.SL = window.SL || {};
     return list.map(function (e) { return e.id; });
   }
 
-  /** presetId 既可以是内置预设 id，也可以是 'effect:<id>' */
+  /** presetId 只认 'effect:<id>'（内置预设已移除） */
   function knownPreset(id) {
     if (typeof id !== 'string') return false;
-    if (SL.presets.has(id)) return true;
     return id.indexOf('effect:') === 0 && effectIds().indexOf(id.slice(7)) >= 0;
   }
 
@@ -212,10 +212,10 @@ window.SL = window.SL || {};
       });
     }
     if (!passes.length && !opts.allowEmpty) {
-      const p = SL.presets.get(out.presetId) || SL.presets.get(base.presetId);
-      passes = p.passes;
-      out.source = p.source || base.source;
-      out.output = { w: p.output.w, h: p.output.h };
+      const fb = SL.passes.defaultDoc();
+      passes = fb.passes;
+      out.source = fb.source || base.source;
+      out.output = { w: fb.output.w, h: fb.output.h };
     }
     out.passes = passes;
 

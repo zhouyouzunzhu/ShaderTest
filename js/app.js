@@ -94,7 +94,7 @@ window.SL = window.SL || {};
       applyDoc(doc || SL.store.defaultState());
       bootDone();
     }).catch(function (err) {
-      SL.ui.toast('读取本地工程失败，已用默认预设：' + (err && err.message ? err.message : err), 'warn');
+      SL.ui.toast('读取本地工程失败，已用默认管线：' + (err && err.message ? err.message : err), 'warn');
       applyDoc(SL.store.defaultState());
       bootDone();
     });
@@ -150,7 +150,7 @@ window.SL = window.SL || {};
       el.innerHTML = SL.icon(map[id], 15);
     });
     const add2 = $('#btn-add-pass-2');
-    if (add2) add2.innerHTML = '<span class="plus">+</span><span>新增 Pass</span>';
+    if (add2) add2.innerHTML = '<span class="plus">+</span><span>插入 Pass</span>';
     const cmdk = $('#cmdk-btn-ic');
     if (cmdk) cmdk.innerHTML = SL.icon('search', 11);
     const saved = $('#save-state .ic');
@@ -184,18 +184,16 @@ window.SL = window.SL || {};
   function fillPresetSelect() {
     const sel = $('#preset-select');
     sel.innerHTML = '';
-    const g1 = SL.h('optgroup', { label: '内置预设' });
-    SL.presets.list.forEach(function (p) {
-      g1.appendChild(SL.h('option', { value: p.id, text: p.name, title: p.desc }));
-    });
-    sel.appendChild(g1);
     const effects = libraryEffects();
+    sel.appendChild(SL.h('option', { value: '', text: '（当前管线）', disabled: true }));
     if (effects.length) {
-      const g2 = SL.h('optgroup', { label: '效果库' });
+      const g = SL.h('optgroup', { label: '效果库' });
       effects.forEach(function (e) {
-        g2.appendChild(SL.h('option', { value: 'effect:' + e.id, text: e.name, title: e.desc }));
+        g.appendChild(SL.h('option', { value: 'effect:' + e.id, text: e.name, title: e.desc }));
       });
-      sel.appendChild(g2);
+      sel.appendChild(g);
+    } else {
+      sel.appendChild(SL.h('option', { value: '__empty', text: '（效果库为空）', disabled: true }));
     }
     sel.appendChild(SL.h('option', { value: '__new', text: '＋ 新建效果…', title: '从「背景 + 效果」两个 Pass 起步' }));
     const cnt = $('#lib-btn-count');
@@ -301,9 +299,8 @@ window.SL = window.SL || {};
     const sel = $('#preset-select');
     const eff = App.doc.effectId
       ? libraryEffects().filter(function (e) { return e.id === App.doc.effectId; })[0] : null;
-    const p = SL.presets.list.filter(function (x) { return x.id === App.doc.presetId; })[0];
-    const title = eff ? (eff.name + ' · ' + (eff.desc || '')) : (p ? p.name + ' · ' + p.desc : '');
-    sel.title = title + (App.doc.custom ? '（已修改）' : '');
+    const title = eff ? (eff.name + ' · ' + (eff.desc || '')) : (App.doc.effectName || '');
+    sel.title = (title || '当前管线') + (App.doc.custom ? '（已修改）' : '');
     $('#pipeline-meta').textContent = SL.pipeline.metaText(App.doc.passes);
   }
 
@@ -1066,13 +1063,13 @@ window.SL = window.SL || {};
   }
 
   /* ========================================================================
-     五、预设 / 时间
+     五、切换 / 时间
      ====================================================================== */
   function confirmDiscard() {
     if (!App.doc.custom) return Promise.resolve(true);
     return SL.ui.confirm({
       title: '替换当前管线？',
-      message: '当前管线有未保存到预设的改动，切换后会丢失。',
+      message: '当前管线有没保存的改动，切换后会丢失。',
       detail: '需要保留的话，先用顶栏的「导出工程」存一份 JSON。',
       okLabel: '仍然切换',
       cancelLabel: '取消',
@@ -1080,28 +1077,19 @@ window.SL = window.SL || {};
     });
   }
 
-  function loadPreset(id) {
-    if (!id) return;
+  /** 把管线重置成一条最朴素的起步管线（保留素材与界面偏好）。 */
+  function resetPipeline() {
     confirmDiscard().then(function (ok) {
-      if (!ok) {
-        $('#preset-select').value = App.doc.presetId;
-        return;
-      }
-      const p = SL.presets.get(id);
-      const doc = SL.store.defaultState(id);
-      const keep = SL.deepClone(App.doc.assets || []);
-      doc.assets = keep;
+      if (!ok) return;
+      const doc = SL.store.normalize(SL.store.defaultState(), { allowNewEffect: true });
+      doc.assets = SL.deepClone(App.doc.assets || []);
       doc.ui = SL.deepClone(App.doc.ui);
-      doc.ui.playing = App.playing;
       doc.resMode = App.doc.resMode;
-      const next = SL.store.normalize(doc, { allowNewEffect: true });
-      applyDoc(next);
+      applyDoc(doc);
       App.time = 0;
       App.frame = 0;
-      $('#preset-select').value = id;
-      const note = p.note;
-      if (note) SL.ui.toast(note, 'info');
-      SL.store.save(next);
+      SL.store.save(doc);
+      SL.ui.toast('已重置为默认管线');
     });
   }
 
@@ -2332,7 +2320,7 @@ window.SL = window.SL || {};
       });
     });
     item('复制这个 Pass', function () { duplicatePass(pass); }, false, 'Ctrl+D');
-    item('在下方插入 Pass', function () {
+    item('在下方插入 Pass…', function () {
       App.doc.selectedPassId = pass.id;
       addPass();
     }, false, 'N');
@@ -2490,7 +2478,130 @@ window.SL = window.SL || {};
     ''
   ].join('\n');
 
-  function addPass() {
+  function addPass(templateId) {
+    if (!templateId) {
+      openPassPicker();
+      return;
+    }
+    const tpl = SL.passes.get(templateId);
+    const built = SL.passes.build(templateId);
+    if (!tpl || !built.length) {
+      SL.ui.toast('没有这个 Pass 模板：' + templateId, 'bad');
+      return;
+    }
+    const cur = selectedPass();
+    const at = cur ? App.doc.passes.indexOf(cur) + 1 : App.doc.passes.length;
+    // 一次插入多个 Pass（模糊 / 泛光），id 依次分配
+    built.forEach(function (bp, k) {
+      bp.id = nextPassId();
+      App.doc.passes.splice(at + k, 0, bp);
+    });
+    compileAll();
+    selectPass(built[0].id);
+    renderPipeline();
+    syncResolutionLabel();
+    setDirty();
+    SL.ui.toast('已插入' + (built.length > 1 ? ' ' + built.length + ' 个 Pass：' : '：') + tpl.name, 'ok');
+    if (built.length === 1) App.editor.focus();
+  }
+
+  /* --------------------------- 常见 Pass 选择器 --------------------------- */
+
+  let passPicker = null;
+
+  function openPassPicker() {
+    if (passPicker) return;
+    const list = $('#pp-list');
+    let box;
+
+    const LABELS = { '': '空白', '调色': '调色', '模糊': '模糊', '提取': '提取', '合成': '合成', '风格化': '风格化', '扭曲': '扭曲' };
+    const entries = [{ id: '', name: '空白 Pass', group: '', desc: '一张白纸，自己写' }]
+      .concat(SL.passes.list.map(function (t) {
+        return { id: t.id, name: t.name, group: t.group, desc: t.desc, extra: t.passes.length > 1 ? t.passes.length + ' 个 Pass' : '' };
+      }));
+
+    function rowHtml(e) {
+      return '<span class="pp-ico">' + (e.id ? SL.icon('sliders', 13) : SL.icon('plus', 13)) + '</span>' +
+        '<span class="pp-body"><span class="pp-name">' + SL.esc(e.name) +
+        (e.extra ? '<i class="pp-tag">' + SL.esc(e.extra) + '</i>' : '') + '</span>' +
+        '<span class="pp-desc">' + SL.esc(e.desc || '') + '</span></span>';
+    }
+
+    const html =
+      '<div class="pp-wrap">' +
+      '<div class="pp-search"><input id="pp-input" type="text" placeholder="搜索 Pass（名称 / 说明）…" spellcheck="false" autocomplete="off"></div>' +
+      '<div class="pp-list" id="pp-list"></div>' +
+      '<div class="pp-foot">回车插入到当前 Pass 之后 · Esc 取消</div>' +
+      '</div>';
+
+    passPicker = SL.ui.modal({
+      title: '插入常见 Pass',
+      icon: 'sliders',
+      narrow: false,
+      body: html,
+      footer: null,
+      onClose: function () { passPicker = null; }
+    });
+
+    const input = passPicker.body.querySelector('#pp-input');
+    const listEl = passPicker.body.querySelector('#pp-list');
+    let filtered = entries;
+    let sel = 0;
+
+    function draw() {
+      listEl.innerHTML = '';
+      if (!filtered.length) {
+        listEl.appendChild(SL.h('div', { class: 'pp-empty', text: '没有匹配的 Pass' }));
+        return;
+      }
+      let lastGroup = null;
+      filtered.forEach(function (e, i) {
+        if (e.group !== lastGroup) {
+          lastGroup = e.group;
+          listEl.appendChild(SL.h('div', { class: 'pp-group', text: LABELS[e.group] || e.group || '其它' }));
+        }
+        const row = SL.h('div', { class: 'pp-item' + (i === sel ? ' active' : ''), html: rowHtml(e) });
+        row.addEventListener('click', function () { pick(i); });
+        row.addEventListener('mouseenter', function () {
+          sel = i;
+          Array.prototype.forEach.call(listEl.querySelectorAll('.pp-item'), function (x, k) {
+            x.classList.toggle('active', k === i);
+          });
+        });
+        listEl.appendChild(row);
+      });
+    }
+
+    function pick(i) {
+      const e = filtered[i];
+      if (!e) return;
+      const id = e.id;
+      if (passPicker) { passPicker.close(); }
+      if (id) addPass(id);
+      else insertBlankPass();
+    }
+
+    input.addEventListener('input', function () {
+      const q = input.value.trim().toLowerCase();
+      filtered = !q ? entries : entries.filter(function (e) {
+        return (e.name + ' ' + (e.desc || '') + ' ' + (e.group || '')).toLowerCase().indexOf(q) >= 0;
+      });
+      sel = 0;
+      draw();
+    });
+
+    input.addEventListener('keydown', function (ev) {
+      if (ev.key === 'ArrowDown') { ev.preventDefault(); sel = Math.min(sel + 1, filtered.length - 1); draw(); }
+      else if (ev.key === 'ArrowUp') { ev.preventDefault(); sel = Math.max(sel - 1, 0); draw(); }
+      else if (ev.key === 'Enter') { ev.preventDefault(); pick(sel); }
+    });
+
+    draw();
+    setTimeout(function () { input.focus(); }, 30);
+  }
+
+  /** 空白 Pass 走原来的模板 */
+  function insertBlankPass() {
     const cur = selectedPass();
     const pass = {
       id: nextPassId(),
@@ -2540,8 +2651,9 @@ window.SL = window.SL || {};
   }
 
   function bindPipelineButtons() {
-    $('#btn-add-pass').addEventListener('click', addPass);
-    $('#btn-add-pass-2').addEventListener('click', addPass);
+    // 注意：不能直接把 addPass 当 handler，事件对象会被当成 templateId
+    $('#btn-add-pass').addEventListener('click', function () { addPass(); });
+    $('#btn-add-pass-2').addEventListener('click', function () { addPass(); });
   }
 
   /* ========================================================================
@@ -2932,12 +3044,11 @@ window.SL = window.SL || {};
     $('#preset-select').addEventListener('change', function (e) {
       const v = e.target.value;
       if (v === '__new') {
-        e.target.value = App.doc.presetId || 'start';
+        e.target.value = App.doc.presetId || '';
         openNewEffect();
         return;
       }
       if (v.indexOf('effect:') === 0) loadEffect(v.slice(7));
-      else loadPreset(v);
     });
     $('#btn-play').addEventListener('click', togglePlay);
     $('#btn-step').addEventListener('click', stepFrame);
@@ -2960,7 +3071,7 @@ window.SL = window.SL || {};
         const url = App.engine.screenshot();
         const a = document.createElement('a');
         a.href = url;
-        a.download = 'shaderlab-' + App.doc.presetId + '-' + stamp() + '.png';
+        a.download = 'shaderlab-' + (App.doc.effectId || 'shot') + '-' + stamp() + '.png';
         document.body.appendChild(a);
         a.click();
         a.remove();
@@ -3161,7 +3272,9 @@ window.SL = window.SL || {};
         case ']':
           e.preventDefault(); cyclePass(1); break;
         case 'n': case 'N':
-          e.preventDefault(); addPass(); break;
+          e.preventDefault();
+          if (e.shiftKey) insertBlankPass(); else openPassPicker();
+          break;
         case 'k': case 'K':
           e.preventDefault(); keyAllTracks(); break;
         case 't': case 'T':
@@ -3317,7 +3430,9 @@ window.SL = window.SL || {};
     });
     add('操作', App.compare ? '关闭原图对比' : '对比原图', 'B', 'split', function () { setCompare(!App.compare); });
     add('操作', App.zen ? '退出专注模式' : '进入专注模式', 'Z', 'zen', function () { setZen(!App.zen); });
-    add('操作', '新增 Pass', 'N', 'plus', addPass);
+    add('操作', '插入常见 Pass…', 'N', 'sliders', openPassPicker, '调色 / 模糊 / 提取 / 合成 / 风格化 / 扭曲');
+    add('操作', '新增空白 Pass', 'Shift+N', 'plus', insertBlankPass);
+    add('操作', '重置为默认管线', '', 'reset', resetPipeline, '清空后只留一个基础调色 Pass');
     add('操作', '重新编译当前 Pass', 'Ctrl+↵', 'bolt', compileNow);
     add('操作', '重命名当前 Pass…', '', 'code', function () {
       const p = selectedPass();
@@ -3347,12 +3462,8 @@ window.SL = window.SL || {};
       });
     }
 
-    (SL.presets.list || []).forEach(function (p) {
-      add('预设', p.name, '', 'grid', function () {
-        const sel = $('#preset-select');
-        sel.value = p.id;
-        sel.dispatchEvent(new Event('change', { bubbles: true }));
-      }, p.desc || '');
+    SL.passes.list.forEach(function (tpl) {
+      add('插入 Pass', tpl.name, tpl.group, 'sliders', function () { addPass(tpl.id); }, tpl.desc || '');
     });
 
     libraryEffects().forEach(function (e) {
@@ -3388,7 +3499,7 @@ window.SL = window.SL || {};
     const row = SL.h('div', { class: 'cmdk-input-row' });
     row.appendChild(SL.h('span', { class: 'ic', html: SL.icon('search', 14) }));
     cmdkInput = SL.h('input', {
-      class: 'cmdk-input', type: 'text', placeholder: '搜索命令、预设、Pass、贴图…',
+      class: 'cmdk-input', type: 'text', placeholder: '搜索命令、Pass、效果、贴图…',
       'aria-label': '搜索命令', autocomplete: 'off', spellcheck: 'false'
     });
     row.appendChild(cmdkInput);
@@ -3418,10 +3529,20 @@ window.SL = window.SL || {};
 
     renderCmdkList('');
     requestAnimationFrame(function () { cmdkInput.focus(); });
+    // 焦点可能被其他浮层抢走，Esc 在 document 上兜底
+    document.addEventListener('keydown', cmdkEsc, true);
+  }
+
+  function cmdkEsc(e) {
+    if (e.key !== 'Escape' || !cmdkEl) return;
+    e.preventDefault();
+    e.stopPropagation();
+    closeCmdk();
   }
 
   function closeCmdk() {
     if (!cmdkEl) return;
+    document.removeEventListener('keydown', cmdkEsc, true);
     cmdkEl.remove();
     cmdkEl = null;
     cmdkInput = null;
@@ -3503,9 +3624,9 @@ window.SL = window.SL || {};
     body.innerHTML = [
       '<h3>三步上手</h3>',
       '<ol>',
-      '<li>左上「预设」挑一个示例，先看效果。</li>',
+      '<li>左上「效果」切一个效果库里的例子；想从零开始就按 <kbd>N</kbd> 挑一个常见 Pass。</li>',
       '<li>下方编辑器改 shader，改完自动重新编译（也可 <kbd>Ctrl</kbd>+<kbd>↵</kbd> 立即编译）。</li>',
-      '<li>右侧「Uniforms」调参数、「纹理」换输入图；左栏「新增 Pass」搭后处理链。</li>',
+      '<li>右侧「Uniforms」调参数、「纹理」换输入图；左栏按 <kbd>N</kbd> 插入调色 / 模糊 / 泛光等现成 Pass。</li>',
       '<li>要做动画：在这个参数名后面点 <code>◇</code> 打一帧，拖时间轴再改值就会自动补帧。</li>',
       '</ol>',
       '<h3>着色器里能直接用东西</h3>',
@@ -3561,12 +3682,15 @@ window.SL = window.SL || {};
       '<h3>公共图库与新建效果</h3>',
       '<p>素材图放到 <code>library/</code>（png / jpg / webp），跑一次 <code>node tools/lib.mjs build</code> 就会出现在「纹理」页的「公共图库」里，' +
       '可以直接当输入图或背景图用；效果包的 <code>inputs</code> 里写 <code>"library:文件名"</code> 也能引用它。</p>',
-      '<p>新建效果：效果库面板右上角「＋ 新建效果」、预设下拉最后一项、或命令面板里搜「新建效果」。' +
+      '<p>新建效果：效果库面板右上角「＋ 新建效果」、效果下拉最后一项、或命令面板里搜「新建效果」。' +
       '会得到两个 Pass——<b>p1 背景</b>（铺底图）和 <b>p2 效果</b>（在上一个 Pass 上做效果），并预置一条扫光关键帧。' +
       '做完点「导出效果包 JSON」下载，然后 <code>node tools/lib.mjs import 文件名.effect.json</code> + <code>build</code> 就进库了。</p>',
+      '<h3>常见 Pass</h3>',
+      '<p>按 <kbd>N</kbd>（或左栏「新增 Pass」）会打开 Pass 选择器：调色、模糊、亮部提取、Sobel 描边、泛光、色差、像素化、颗粒、波纹、噪声位移、残影反馈。' +
+      '一个模板可能插入多个 Pass（高斯模糊两趟、泛光四趟），插进来之后仍然是普通 Pass，可以随便改代码。</p>',
       '<h3>快捷键</h3>',
       '<table class="keys-grid">',
-      '<tr><td><kbd>Ctrl</kbd>+<kbd>K</kbd></td><td>命令面板：搜命令 / 预设 / 效果 / Pass / 贴图</td></tr>',
+      '<tr><td><kbd>Ctrl</kbd>+<kbd>K</kbd></td><td>命令面板：搜命令 / Pass 模板 / 效果 / 贴图</td></tr>',
       '<tr><td><kbd>Ctrl</kbd>+<kbd>L</kbd></td><td>打开 / 关闭效果库</td></tr>',
       '<tr><td><kbd>Space</kbd></td><td>播放 / 暂停</td></tr>',
       '<tr><td><kbd>→</kbd> <kbd>←</kbd></td><td>单帧前进 / 后退</td></tr>',
@@ -3575,7 +3699,8 @@ window.SL = window.SL || {};
       '<tr><td><kbd>B</kbd> 或按住 <kbd>\\</kbd></td><td>对比原始输入图</td></tr>',
       '<tr><td><kbd>Z</kbd></td><td>专注模式（只留预览，<kbd>Esc</kbd> 退出）</td></tr>',
       '<tr><td><kbd>[</kbd> <kbd>]</kbd></td><td>上一个 / 下一个 Pass</td></tr>',
-      '<tr><td><kbd>N</kbd> / <kbd>Ctrl</kbd>+<kbd>D</kbd></td><td>新增 Pass / 复制当前 Pass</td></tr>',
+      '<tr><td><kbd>N</kbd> / <kbd>Shift</kbd>+<kbd>N</kbd></td><td>插入常见 Pass / 插入空白 Pass</td></tr>',
+      '<tr><td><kbd>Ctrl</kbd>+<kbd>D</kbd></td><td>复制当前 Pass</td></tr>',
       '<tr><td><kbd>K</kbd></td><td>当前时刻给这个 Pass 的所有轨道打帧</td></tr>',
       '<tr><td><kbd>Ctrl</kbd>+<kbd>E</kbd> / <kbd>Del</kbd></td><td>启用或停用 / 删除当前 Pass</td></tr>',
       '<tr><td><kbd>Ctrl</kbd>+<kbd>↑</kbd> <kbd>↓</kbd></td><td>上移 / 下移当前 Pass</td></tr>',
@@ -3600,12 +3725,12 @@ window.SL = window.SL || {};
      ====================================================================== */
   function runSelfTest() {
     const report = [];
-    SL.presets.ids.forEach(function (id) {
-      const p = SL.presets.get(id);
-      p.passes.forEach(function (pass) {
-        const res = App.engine.compile(pass.code, { isFirst: p.passes.indexOf(pass) === 0 });
+    SL.passes.list.forEach(function (tpl) {
+      const built = SL.passes.build(tpl.id);
+      built.forEach(function (pass, i) {
+        const res = App.engine.compile(pass.code, { isFirst: i === 0 });
         report.push({
-          preset: id, pass: pass.name, ok: res.ok,
+          template: tpl.id, pass: pass.name, ok: res.ok,
           errors: (res.errors || []).map(function (e) { return e.line + ': ' + e.message; })
         });
       });
@@ -3617,19 +3742,26 @@ window.SL = window.SL || {};
     autoRun: false,
     report: function () { return App.__selfTest || []; },
     checkAll: runSelfTest,
-    loadPreset: function (id) {
-      const doc = SL.store.defaultState(id);
+    /** 把一个常见 Pass 模板应用到当前文档（清空管线后插入） */
+    loadTemplate: function (id) {
+      const built = SL.passes.build(id);
+      if (!built.length) return null;
+      const doc = SL.store.defaultState();
+      doc.source = (App.doc && App.doc.source) || doc.source;
+      doc.output = (App.doc && App.doc.output) || doc.output;
       doc.assets = SL.deepClone((App.doc && App.doc.assets) || []);
       doc.ui = SL.deepClone((App.doc && App.doc.ui) || {});
-      App.doc = SL.store.normalize(doc);
+      doc.passes = built.map(function (bp, i) { bp.id = 'p' + (i + 1); return bp; });
+      App.doc = SL.store.normalize(doc, { allowEmpty: false });
       App.time = 0; App.frame = 0;
       selectPass(App.doc.passes[0].id, true);
       compileAll();
       renderPipeline();
       renderInspector();
       syncStage();
+      syncScrub();
       App.needsRender = true;
-      $('#preset-select').value = id;
+      $('#preset-select').value = '';
       return App.doc.passes.map(function (p) {
         const r = App.compiled[p.id];
         return { name: p.name, ok: r.ok, errors: (r.errors || []).map(function (e) { return e.line + ': ' + e.message; }) };

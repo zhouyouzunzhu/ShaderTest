@@ -52,7 +52,7 @@ window.SL = window.SL || {};
       list.appendChild(SL.h('div', {
         class: 'insp-empty',
         style: 'padding:18px 14px;text-align:center',
-        html: '还没有 Pass。<br>点下方「新增 Pass」开始。'
+        html: '还没有 Pass。<br>点下方「插入 Pass」或按 <kbd>N</kbd> 挑一个。'
       }));
       return;
     }

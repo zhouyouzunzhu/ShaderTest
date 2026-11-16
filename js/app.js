@@ -100,6 +100,7 @@ window.SL = window.SL || {};
         if (App.doc && App.doc.ui.tab === 'textures') renderInspector();
       });
     }).then(function () {
+      fillPresetSelect();      // 效果数量以磁盘为准（服务模式下可能比 index.js 新）
       return SL.store.load();
     }).then(function (doc) {
       App.__fresh = !doc;
@@ -1617,7 +1618,11 @@ window.SL = window.SL || {};
         }).then(function () {
           SL.ui.toast('已写入 effects/' + id + '，效果库已更新', 'ok');
           m.close();
-          if (typeof libraryOpen === 'function' && libraryOpen) renderLibrary();
+          fillPresetSelect();
+          if (typeof libraryOpen === 'function' && libraryOpen) {
+            renderLibrary();
+            buildLibraryThumbs();
+          }
         }).catch(function (e) {
           saveBtn.disabled = false;
           SL.ui.toast('写入失败：' + e.message, 'bad');

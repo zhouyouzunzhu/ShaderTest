@@ -60,13 +60,16 @@ node tools/lib.mjs build
 
 ```json
 "inputs": {
-  "sprite": "builtin:sprite",     // 内置图：testcard / checker / noise / gradient / circle / sprite
-  "mask":   "input/mask.png"      // 相对效果目录的文件，构建时会转成 dataURL 内联
+  "sprite": "builtin:sprite",          // 内置图：testcard / checker / noise / gradient / circle / sprite
+  "wood":   "library:wood-1853403",    // 公共图库里的素材（library/ 下图片的文件名，去掉扩展名）
+  "mask":   "input/mask.png"           // 相对效果目录的文件，构建时会转成 dataURL 内联
 }
 ```
 
-贴图在页面里的 id 是 `builtin:<名字>` 或导入后的 `a:…`；构建会把它内联进 `index.json`，
-所以效果目录自包含，复制给别人也能直接跑。
+贴图在页面里的 id 是 `builtin:<名字>`、`lib:<文件名>` 或导入后的 `a:…`；构建会把内置图与
+`input/` 里的图内联进 `index.json`（`library:` 引用只记名字，图仍在 `library/` 里，不重复占体积），
+所以效果目录自包含，复制给别人也能直接跑。用 `library:` 前记得先跑 `node tools/lib.mjs build`
+让图库索引里有这张图。
 
 ### passes
 
@@ -103,6 +106,31 @@ void main() {
 
 一次性效果请用 `u_t01` 驱动，**不要**用 `u_time` 取模：预览下方的时间轴拖动时会直接改 `u_t01`。
 
+## tracks（关键帧）
+
+`effect.json` 里的 `tracks` 让效果一打开就带着动画。结构是 `Pass → uniform → 帧数组`：
+
+```json
+"tracks": {
+  "p2": {
+    "u_sweep": [
+      { "t": 0.0, "v": [-0.2], "e": "inout" },
+      { "t": 1.2, "v": [1.4],  "e": "inout" }
+    ]
+  }
+}
+```
+
+| 字段 | 说明 |
+| --- | --- |
+| 键（`p2`） | Pass id（`p1`、`p2`…，和 `passes` 顺序一致） |
+| 键（`u_sweep`） | uniform 名，必须是该 Pass 里声明过的参数 |
+| `t` | 秒，≥ 0，组内自动排序 |
+| `v` | 数值数组，长度要和参数分量数一致（`vec3` 就三个） |
+| `e` | 到**下一帧**的缓动：`linear` / `in` / `out` / `inout` / `step` |
+
+在编辑器里打的帧（参数名后面的 `◇`、时间轴「打帧」、双击轨道补帧）导出效果包时会原样写进 `tracks`。
+
 ## 约定与坑
 
 - **平方不要写 `pow(x, 2.0)`**：x < 0 时 GLSL 未定义（D3D11 上会整片发白）。写 `q*q`。
@@ -114,8 +142,11 @@ void main() {
 ## 命令
 
 ```bash
-node tools/lib.mjs build    # 校验 + 生成 index.json / index.js
-node tools/lib.mjs check    # 只校验（CI / 提交前跑）
-node tools/lib.mjs list     # 列出效果
-node tools/new.mjs <id>     # 新建效果脚手架
+node tools/lib.mjs build                            # 校验 + 生成 index.json / index.js
+node tools/lib.mjs check                            # 只校验（CI / 提交前跑）
+node tools/lib.mjs list                             # 列出效果
+node tools/lib.mjs import fx-xxxx.effect.json       # 把页面导出的效果包落到 effects/
+node tools/new.mjs <id>                             # 新建效果脚手架
 ```
+
+`library/` 里放公共素材图，`build` 会一并扫进 `library/index.js`；效果包用 `library:<文件名>` 引用它们。

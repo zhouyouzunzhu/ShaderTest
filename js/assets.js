@@ -221,6 +221,45 @@ window.SL = window.SL || {};
       });
     }
 
+    /**
+     * 公共图库（library/index.js）：条目 id 稳定为 lib:<文件名>，图片异步解码，
+     * 因此解码完要把 version 加一，让下一次 getTexture 重新上传。
+     */
+    ensureLibrary(onLoaded) {
+      const lib = window.SL_LIBRARY;
+      if (!lib || !Array.isArray(lib.items)) return;
+      lib.items.forEach((item) => {
+        const id = 'lib:' + item.id;
+        if (this.items.some((i) => i.id === id)) return;
+        const entry = {
+          id: id,
+          name: item.name || item.id,
+          kind: 'library',
+          libId: item.id,
+          image: null,
+          width: item.w || 0,
+          height: item.h || 0,
+          version: 0,
+          note: item.file,
+          params: { filter: 'linear', wrap: 'clamp' }
+        };
+        this.items.push(entry);
+        const img = new Image();
+        img.onload = () => {
+          entry.image = img;
+          entry.width = img.naturalWidth;
+          entry.height = img.naturalHeight;
+          entry.version = (entry.version || 0) + 1;
+          if (this.thumbs.has(id)) this.thumbs.delete(id);
+          if (typeof onLoaded === 'function') onLoaded(entry);
+        };
+        img.onerror = () => {
+          entry.error = true;
+        };
+        img.src = item.dataURL;
+      });
+    }
+
     byId(id) {
       for (let i = 0; i < this.items.length; i++) if (this.items[i].id === id) return this.items[i];
       return null;

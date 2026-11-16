@@ -17,5 +17,13 @@
         "u_sprite": { "kind": "asset", "input": "sprite" }
       }
     }
-  ]
+  ],
+  "tracks": {
+    "p1": {
+      "u_width": [
+        { "t": 0.0, "v": [0.12], "e": "inout" },
+        { "t": 0.9, "v": [0.03], "e": "linear" }
+      ]
+    }
+  }
 }

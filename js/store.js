@@ -133,9 +133,16 @@ window.SL = window.SL || {};
     const src = input && typeof input === 'object' ? input : {};
 
     out.v = 1;
-    out.presetId = knownPreset(src.presetId) ? src.presetId : base.presetId;
+    const idOk = typeof src.effectId === 'string' && /^[a-z0-9][a-z0-9-]*$/.test(src.effectId);
+    const isDraft = idOk && src.presetId === ('effect:' + src.effectId) &&
+      (opts.allowNewEffect || (typeof src.effectName === 'string' && !!src.effectName.trim()));
+    out.presetId = isDraft ? src.presetId : (knownPreset(src.presetId) ? src.presetId : base.presetId);
     out.effectId = out.presetId.indexOf('effect:') === 0 ? out.presetId.slice(7) : null;
     out.effectBuiltAt = out.effectId && typeof src.effectBuiltAt === 'string' ? src.effectBuiltAt : null;
+    out.effectName = typeof src.effectName === 'string' ? src.effectName.slice(0, 60) : null;
+    out.effectTags = Array.isArray(src.effectTags)
+      ? src.effectTags.filter(function (t) { return typeof t === 'string' && t.trim(); }).map(function (t) { return t.trim().slice(0, 16); }).slice(0, 8)
+      : [];
     out.custom = !!src.custom;
 
     out.source = typeof src.source === 'string' ? src.source : base.source;
@@ -234,6 +241,34 @@ window.SL = window.SL || {};
             wrap: a.params && a.params.wrap === 'repeat' ? 'repeat' : 'clamp'
           }
         });
+      });
+    }
+
+    /* 关键帧轨道：只保留指向现存 Pass 的、结构合法的时间序列 */
+    out.timeline = {};
+    if (src.timeline && typeof src.timeline === 'object') {
+      Object.keys(src.timeline).forEach(function (pid) {
+        if (ids.indexOf(pid) < 0) return;
+        const lanes = src.timeline[pid];
+        if (!lanes || typeof lanes !== 'object') return;
+        const clean = {};
+        Object.keys(lanes).forEach(function (name) {
+          const keys = lanes[name];
+          if (!Array.isArray(keys)) return;
+          const outKeys = [];
+          keys.forEach(function (k) {
+            if (!k || typeof k !== 'object') return;
+            const t = Number(k.t);
+            if (!isFinite(t) || t < 0) return;
+            const v = Array.isArray(k.v) ? k.v.map(Number) : [Number(k.v)];
+            if (!v.length || v.some(function (x) { return !isFinite(x); })) return;
+            const e = ['linear', 'in', 'out', 'inout', 'step'].indexOf(k.e) >= 0 ? k.e : 'linear';
+            outKeys.push({ t: t, v: v, e: e });
+          });
+          outKeys.sort(function (a, b) { return a.t - b.t; });
+          if (outKeys.length) clean[name] = outKeys;
+        });
+        if (Object.keys(clean).length) out.timeline[pid] = clean;
       });
     }
 

@@ -65,6 +65,11 @@ window.SL = window.SL || {};
     }
     App.assets = new SL.AssetStore(App.engine.gl);
     App.assets.ensureBuiltins();
+    App.assets.ensureLibrary(function () {
+      // 图库图片是异步解码的：解完要重画一次，缩略图与纹理才会有内容
+      App.needsRender = true;
+      if (App.doc && App.doc.ui.tab === 'textures') renderInspector();
+    });
 
     initEditor();
     bindTopbar();
@@ -75,6 +80,7 @@ window.SL = window.SL || {};
     bindKeyboard();
     bindCtxMenuGuard();
     bindDrop();
+    bindTimeline();
 
     App.save = SL.debounce(function () {
       if (!App.doc) return;
@@ -191,13 +197,27 @@ window.SL = window.SL || {};
       });
       sel.appendChild(g2);
     }
+    sel.appendChild(SL.h('option', { value: '__new', text: '＋ 新建效果…', title: '从「背景 + 效果」两个 Pass 起步' }));
     const cnt = $('#lib-btn-count');
     if (cnt) cnt.textContent = effects.length ? String(effects.length) : '';
   }
 
+  /** 当前文档指向的效果还没落盘（不在 index 里）时，给下拉补一个临时项 */
+  function ensurePresetOption(doc) {
+    const sel = $('#preset-select');
+    if (!doc || !doc.presetId) return;
+    if (Array.prototype.some.call(sel.options, function (o) { return o.value === doc.presetId; })) return;
+    const op = SL.h('option', {
+      value: doc.presetId,
+      text: '（未落盘）' + (doc.effectName || (doc.effectId || doc.presetId))
+    });
+    // 放在「新建效果…」之前
+    const last = sel.lastElementChild;
+    if (last) sel.insertBefore(op, last); else sel.appendChild(op);
+  }
+
   /** 效果库索引（effects/index.js 由 node tools/lib.mjs build 生成） */
-  function libraryEffects() {
-    return (window.SL_EFFECTS && Array.isArray(window.SL_EFFECTS.effects))
+  function libraryEffects() {    return (window.SL_EFFECTS && Array.isArray(window.SL_EFFECTS.effects))
       ? window.SL_EFFECTS.effects : [];
   }
 
@@ -231,6 +251,7 @@ window.SL = window.SL || {};
         const fEl = $('#font-size');
         if (fEl) fEl.textContent = String(size);
       }
+      ensurePresetOption(doc);
       $('#preset-select').value = doc.presetId;
       $('#auto-toggle').checked = true;
       applyPreviewBg();
@@ -396,13 +417,17 @@ window.SL = window.SL || {};
     if (App.playing) {
       App.time += dt * App.speed;
       const dur = durationOf();
-      // 一次性效果：走到末尾就停住，停在最后一帧而不是继续累加时间
-      if (dur > 0 && !App.doc.loop && App.time >= dur) {
-        App.time = dur;
-        App.playing = false;
-        App.doc.ui.playing = false;
-        syncPlayButton();
-        syncScrub();
+      if (dur > 0) {
+        if (App.doc.loop) {
+          // 有长度且勾了循环：时间在 [0, duration] 里绕圈，关键帧与 u_t01 一起回到起点
+          if (App.time >= dur) App.time = App.time % dur;
+        } else if (App.time >= dur) {
+          // 一次性效果：走到末尾就停住，停在最后一帧而不是继续累加时间
+          App.time = dur;
+          App.playing = false;
+          App.doc.ui.playing = false;
+          syncPlayButton();
+        }
       }
       App.needsRender = true;
     }
@@ -431,9 +456,464 @@ window.SL = window.SL || {};
     return App.assets.getTexture(entry);
   }
 
+  /* ========================================================================
+     四之一、时间轴与关键帧
+     - 没有 duration 的 shader：时间是无限递增的，时间轴是一扇跟着走的窗口
+     - 有 duration 的 shader：默认循环，游标在 [0, duration] 内绕圈
+     - 关键帧存在 doc.timeline[passId][uniformName] = [{t, v, e}]
+     ====================================================================== */
+  const EASES = ['linear', 'in', 'out', 'inout', 'step'];
+  const EASE_LABEL = { linear: '线性', in: '缓入', out: '缓出', inout: '缓入缓出', step: '阶跃' };
+  const TL_MIN_SPAN = 4;          // 时间轴最短显示 4 秒
+  const TL_PAD = 96;              // 左侧留给轨道名（Pass · 参数名）的宽度
+  const TL_TAIL = 20;             // 右侧留白，免得末尾的关键帧/游标贴边被裁
+  let tlView = { start: 0, span: TL_MIN_SPAN };
+  let tlSel = null;               // { passId, name, idx }
+  let tlDrag = false;             // 正在拖动时间轴游标
+
+  function easeFn(e, k) {
+    if (e === 'in') return k * k;
+    if (e === 'out') return 1 - (1 - k) * (1 - k);
+    if (e === 'inout') return k < 0.5 ? 2 * k * k : 1 - Math.pow(-2 * k + 2, 2) / 2;
+    if (e === 'step') return 0;
+    return k;
+  }
+
+  /** 在一组关键帧上取值（首尾之外各取端值） */
+  function sampleTrack(keys, t) {
+    if (!keys || !keys.length) return null;
+    if (t <= keys[0].t) return keys[0].v.slice();
+    const last = keys[keys.length - 1];
+    if (t >= last.t) return last.v.slice();
+    let i = 0;
+    while (i < keys.length - 1 && keys[i + 1].t <= t) i++;
+    const a = keys[i], b = keys[i + 1];
+    const span = b.t - a.t;
+    const k = span > 1e-6 ? (t - a.t) / span : 0;
+    const f = easeFn(a.e || 'linear', SL.clamp(k, 0, 1));
+    return a.v.map(function (x, j) {
+      const y = b.v[j] == null ? x : b.v[j];
+      return x + (y - x) * f;
+    });
+  }
+
+  function tracksOf(passId) {
+    const tl = (App.doc && App.doc.timeline) || {};
+    return tl[passId] || {};
+  }
+
+  function trackOf(passId, name) {
+    return tracksOf(passId)[name] || null;
+  }
+
+  /** 时间轴上所有关键帧里最大的 t */
+  function lastKeyTime() {
+    let max = 0;
+    const tl = (App.doc && App.doc.timeline) || {};
+    Object.keys(tl).forEach(function (pid) {
+      const lanes = tl[pid] || {};
+      Object.keys(lanes).forEach(function (n) {
+        lanes[n].forEach(function (k) { if (k.t > max) max = k.t; });
+      });
+    });
+    return max;
+  }
+
+  /** 在一组关键帧里找「当前时刻」那一帧（用于高亮 / 覆盖写） */
+  function keyIndexAt(keys, t, eps) {
+    if (!keys) return -1;
+    const e = eps == null ? 0.02 : eps;
+    for (let i = 0; i < keys.length; i++) if (Math.abs(keys[i].t - t) <= e) return i;
+    return -1;
+  }
+
+  function ensureTimelineBucket(passId) {
+    if (!App.doc.timeline) App.doc.timeline = {};
+    if (!App.doc.timeline[passId]) App.doc.timeline[passId] = {};
+    return App.doc.timeline[passId];
+  }
+
+  /** 打一帧：同一时刻已有就覆盖，没有就插入并保持按时间排序 */
+  function setKeyframe(passId, name, t, values, ease) {
+    const bucket = ensureTimelineBucket(passId);
+    const keys = bucket[name] || (bucket[name] = []);
+    const at = keyIndexAt(keys, t);
+    const v = (values || []).map(Number);
+    if (at >= 0) {
+      keys[at].v = v;
+      if (ease) keys[at].e = ease;
+    } else {
+      keys.push({ t: Math.max(0, t), v: v, e: ease || 'linear' });
+      keys.sort(function (a, b) { return a.t - b.t; });
+    }
+    return keys;
+  }
+
+  function keyframeAt(passId, name, t) {
+    const keys = trackOf(passId, name);
+    const i = keyIndexAt(keys, t);
+    return i >= 0 ? keys[i] : null;
+  }
+
+  function dropTrack(passId, name) {
+    const bucket = ensureTimelineBucket(passId);
+    delete bucket[name];
+    if (!Object.keys(bucket).length) delete App.doc.timeline[passId];
+    tlSel = null;
+  }
+
+  /** 把关键帧的值写回 pass.values（每帧渲染前调用；不写回去 shader 就看不到动画） */
+  function applyTracks(t) {
+    if (!App.doc || !App.doc.timeline) return;
+    const tl = App.doc.timeline;
+    App.doc.passes.forEach(function (pass) {
+      const lanes = tl[pass.id];
+      if (!lanes) return;
+      Object.keys(lanes).forEach(function (name) {
+        const vals = sampleTrack(lanes[name], t);
+        if (vals) pass.values[name] = vals;
+      });
+    });
+  }
+
+  /** 给当前 Pass 的某个参数打帧（uniforms 面板上的 ◇ 按钮走这里） */
+  function toggleKeyframe(passId, name, values) {
+    const t = Math.round(App.time * 1000) / 1000;
+    const keys = trackOf(passId, name);
+    const at = keyIndexAt(keys, t);
+    if (at >= 0) {
+      keys.splice(at, 1);
+      if (!keys.length) dropTrack(passId, name);
+      SL.ui.toast('已删除 ' + name + ' 在 ' + t.toFixed(2) + 's 的关键帧', 'info');
+    } else {
+      setKeyframe(passId, name, t, values);
+      SL.ui.toast('已给 ' + name + ' 打帧 @ ' + t.toFixed(2) + 's', 'ok');
+    }
+    App.playing = false;
+    App.needsRender = true;
+    syncTimeline();
+    renderInspector();
+    setDirty();
+  }
+
+  /* ---------------------------- 视图窗口 ---------------------------- */
+  function computeTlView() {
+    const dur = durationOf();
+    if (dur > 0) { tlView = { start: 0, span: dur }; return; }
+    const span = Math.max(TL_MIN_SPAN, lastKeyTime() * 1.15);
+    tlView = { start: 0, span: span };
+  }
+
+  /** 时间轴「适应」：有 duration 用它，否则装下所有关键帧 */
+  function fitTimeline() {
+    const dur = durationOf();
+    const span = dur > 0 ? dur : Math.max(TL_MIN_SPAN, lastKeyTime() * 1.15);
+    tlView = { start: 0, span: span };
+    syncTimeline();
+  }
+
+  function tlTimeToX(t) {
+    const body = $('#tl-body');
+    const w = Math.max(1, (body ? body.clientWidth : 600) - TL_PAD - TL_TAIL);
+    return TL_PAD + ((t - tlView.start) / tlView.span) * w;
+  }
+
+  function tlXToTime(x) {
+    const body = $('#tl-body');
+    const w = Math.max(1, (body ? body.clientWidth : 600) - TL_PAD - TL_TAIL);
+    return tlView.start + (Math.max(0, x - TL_PAD) / w) * tlView.span;
+  }
+
+  /* ---------------------------- 渲染 ---------------------------- */
+  function syncTimeline() {
+    if (!App.doc) return;
+    const dur = durationOf();
+    const box = $('#timeline');
+    const body = $('#tl-body');
+    if (!box || !body) return;
+
+    const mode = $('#tl-mode');
+    if (mode) {
+      mode.textContent = dur > 0
+        ? (App.doc.loop ? '循环 ' + dur.toFixed(2) + 's' : '一次性 ' + dur.toFixed(2) + 's')
+        : '无限时间';
+    }
+    const loopBtn = $('#tl-loop');
+    if (loopBtn) {
+      loopBtn.hidden = !(dur > 0);
+      loopBtn.setAttribute('aria-pressed', App.doc.loop ? 'true' : 'false');
+      loopBtn.textContent = App.doc.loop ? '循环' : '单次';
+    }
+
+    computeTlView();
+    body.style.setProperty('--tl-grid', (tlTimeToX(tlView.start + 1) - tlTimeToX(tlView.start)) + 'px');
+
+    // 刻度
+    const ruler = $('#tl-ruler');
+    if (ruler) {
+      ruler.innerHTML = '';
+      const step = niceStep(tlView.span);
+      const dec = step >= 1 ? 0 : step >= 0.1 ? 1 : 2;
+      let lastLabelX = -999;
+      for (let t = 0; t <= tlView.span + 1e-6; t += step) {
+        const x = tlTimeToX(t);
+        ruler.appendChild(SL.h('div', { class: 'tl-tick', style: 'left:' + x + 'px' }));
+        if (x - lastLabelX < 34) continue;   // 太挤就跳过这个标签，免得叠字
+        lastLabelX = x;
+        ruler.appendChild(SL.h('div', {
+          class: 'tl-tick-label',
+          style: 'left:' + x + 'px',
+          text: t.toFixed(dec) + 's'
+        }));
+      }
+    }
+
+    // 轨道
+    const lanes = $('#tl-lanes');
+    if (lanes) {
+      lanes.innerHTML = '';
+      const rows = [];
+      App.doc.passes.forEach(function (pass) {
+        const t = tracksOf(pass.id);
+        Object.keys(t).forEach(function (name) { rows.push({ pass: pass, name: name, keys: t[name] }); });
+      });
+      const empty = $('#tl-empty');
+      if (empty) empty.classList.toggle('hidden', rows.length > 0);
+      body.classList.toggle('no-lanes', rows.length === 0);
+      body.style.height = rows.length ? (16 + rows.length * 17 + 6) + 'px' : '';
+      const showPass = App.doc.passes.length > 1;
+      rows.forEach(function (row) {
+        const lane = SL.h('div', { class: 'tl-lane', 'data-pass': row.pass.id, 'data-name': row.name });
+        lane.appendChild(SL.h('span', {
+          class: 'tl-lane-name',
+          text: (showPass ? row.pass.name + ' · ' : '') + row.name
+        }));
+        row.keys.forEach(function (k, idx) {
+          const el = SL.h('div', {
+            class: 'tl-key' + (k.e === 'step' ? ' e-step' : '') +
+              (tlSel && tlSel.passId === row.pass.id && tlSel.name === row.name && tlSel.idx === idx ? ' on' : ''),
+            style: 'left:' + tlTimeToX(k.t) + 'px',
+            title: row.name + ' @ ' + k.t.toFixed(2) + 's = ' + k.v.map(function (v) { return SL.fmt(v, 3); }).join(', ')
+          });
+          el.addEventListener('pointerdown', function (ev) {
+            ev.stopPropagation();
+            openKeyMenu(ev, row.pass.id, row.name, idx);
+          });
+          lane.appendChild(el);
+        });
+        lanes.appendChild(lane);
+      });
+    }
+    updatePlayhead();
+    updateTimeReadout();
+    // 时间轴占了底部空间，把预览的悬浮工具条顶上去
+    const pane = $('#preview-pane');
+    if (pane) pane.style.setProperty('--tl-h', box.offsetHeight + 'px');
+  }
+
+  function niceStep(span) {
+    const target = span / 6;
+    const pow = Math.pow(10, Math.floor(Math.log10(Math.max(1e-3, target))));
+    const n = target / pow;
+    const mult = n <= 1 ? 1 : n <= 2 ? 2 : n <= 5 ? 5 : 10;
+    return mult * pow;
+  }
+
+  /* 时间文案：轨道/提示里统一用一位小数，够看又不啰嗦 */
+  function fmtSec(t) {
+    if (t >= 10) return t.toFixed(0) + 's';
+    if (t >= 1) return t.toFixed(2).replace(/0+$/, '').replace(/\.$/, '') + 's';
+    return t.toFixed(2) + 's';
+  }
+
+  function updatePlayhead() {
+    const head = $('#tl-playhead');
+    if (!head) return;
+    const x = tlTimeToX(App.time);
+    const inside = x >= -1 && x <= ($('#tl-body') ? $('#tl-body').clientWidth + 1 : 1e9);
+    head.style.display = inside ? '' : 'none';
+    head.style.left = Math.round(x) + 'px';
+    const tm = $('#tl-time');
+    if (tm) {
+      const dur = durationOf();
+      tm.textContent = App.time.toFixed(2) + 's' + (dur > 0 ? ' / ' + dur.toFixed(2) + 's' : '');
+    }
+  }
+
+  /** 拖动 / 点击时间轴 → 设时间（自动暂停，方便定帧调参） */
+  function scrubTo(t) {
+    const dur = durationOf();
+    let nt = Math.max(0, t);
+    if (dur > 0) {
+      if (App.doc.loop) nt = ((nt % dur) + dur) % dur;
+      else nt = Math.min(nt, dur);
+    }
+    App.time = nt;
+    if (App.playing) {
+      App.playing = false;
+      App.doc.ui.playing = false;
+      syncPlayButton();
+    }
+    App.needsRender = true;
+    applyTracks(App.time);
+    updatePlayhead();
+  }
+
+  function openKeyMenu(ev, passId, name, idx) {
+    tlSel = { passId: passId, name: name, idx: idx };
+    const keys = trackOf(passId, name);
+    const key = keys && keys[idx];
+    if (!key) return;
+    const body = SL.h('div', { style: 'min-width:220px' });
+    body.appendChild(SL.h('div', { class: 'ctxmenu-label', text: name + ' @ ' + key.t.toFixed(3) + 's' }));
+
+    const rowEase = SL.h('div', { class: 'ctxmenu-item row', style: 'cursor:default;white-space:nowrap' });
+    rowEase.appendChild(SL.h('span', { class: 'lbl', text: '到下一帧的缓动' }));
+    const sel = SL.h('select', { class: 'sel', style: 'height:22px;flex:0 0 auto' });
+    EASES.forEach(function (e) {
+      sel.appendChild(SL.h('option', { value: e, text: EASE_LABEL[e] }));
+    });
+    sel.value = key.e || 'linear';
+    sel.addEventListener('change', function () {
+      key.e = sel.value;
+      syncTimeline();
+      setDirty();
+    });
+    rowEase.appendChild(sel);
+    body.appendChild(rowEase);
+
+    body.appendChild(SL.h('div', {
+      class: 'ctxmenu-item',
+      html: '<span class="lbl">跳到这一帧</span>'
+    })).addEventListener('click', function () {
+      App.time = key.t;
+      App.playing = false;
+      App.doc.ui.playing = false;
+      syncPlayButton();
+      App.needsRender = true;
+      closePopover();
+      syncTimeline();
+    });
+
+    body.appendChild(SL.h('div', { class: 'ctxmenu-sep' }));
+    body.appendChild(SL.h('div', {
+      class: 'ctxmenu-item',
+      html: '<span class="lbl" style="color:var(--bad)">删除这个关键帧</span>'
+    })).addEventListener('click', function () {
+      keys.splice(idx, 1);
+      if (!keys.length) dropTrack(passId, name);
+      closePopover();
+      syncTimeline();
+      renderInspector();
+      App.needsRender = true;
+      setDirty();
+    });
+
+    popoverAt(ev, body);
+  }
+
+  let tlPop = null;
+  function closePopover() {
+    if (tlPop) { tlPop.remove(); tlPop = null; }
+  }
+  function popoverAt(ev, content) {
+    closePopover();
+    const pop = SL.h('div', { class: 'popover', style: 'position:fixed;z-index:1200;padding:4px;min-width:220px;animation:none' });
+    pop.appendChild(content);
+    document.body.appendChild(pop);
+    const pad = 8;
+    const r = pop.getBoundingClientRect();
+    let x = ev.clientX + 8, y = ev.clientY + 8;
+    if (x + r.width > innerWidth - pad) x = innerWidth - r.width - pad;
+    if (y + r.height > innerHeight - pad) y = ev.clientY - r.height - 8;
+    pop.style.left = Math.max(pad, x) + 'px';
+    pop.style.top = Math.max(pad, y) + 'px';
+    tlPop = pop;
+    setTimeout(function () {
+      document.addEventListener('pointerdown', function off(e) {
+        if (tlPop && !tlPop.contains(e.target)) { closePopover(); document.removeEventListener('pointerdown', off, true); }
+      }, true);
+    }, 0);
+  }
+
+  function bindTimeline() {
+    const body = $('#tl-body');
+    if (body) {
+      body.addEventListener('pointerdown', function (e) {
+        if (e.target.closest('.tl-key')) return;
+        tlDrag = true;
+        try { if (e.pointerId != null) body.setPointerCapture(e.pointerId); } catch (err) { /* 合成事件拿不到 pointerId */ }
+        scrubTo(tlXToTime(e.clientX - body.getBoundingClientRect().left));
+      });
+      body.addEventListener('pointermove', function (e) {
+        if (!tlDrag) return;
+        scrubTo(tlXToTime(e.clientX - body.getBoundingClientRect().left));
+      });
+      const stop = function () {
+        if (!tlDrag) return;
+        tlDrag = false;
+        App.save && App.save();
+      };
+      body.addEventListener('pointerup', stop);
+      body.addEventListener('pointercancel', stop);
+      body.addEventListener('dblclick', function (e) {
+        if (e.target.closest('.tl-key')) return;
+        const lane = e.target.closest('.tl-lane');
+        if (!lane) return;
+        const passId = lane.dataset.pass, name = lane.dataset.name;
+        const pass = App.doc.passes.filter(function (p) { return p.id === passId; })[0];
+        if (!pass) return;
+        const t = Math.max(0, tlXToTime(e.clientX - body.getBoundingClientRect().left));
+        setKeyframe(passId, name, Math.round(t * 1000) / 1000, pass.values[name] || [0]);
+        syncTimeline();
+        setDirty();
+      });
+    }
+    const loopBtn = $('#tl-loop');
+    if (loopBtn) loopBtn.addEventListener('click', function () {
+      App.doc.loop = !App.doc.loop;
+      syncTimeline();
+      setDirty();
+      if (!App.doc.loop && durationOf() > 0 && App.time > durationOf()) App.time = durationOf();
+    });
+    const fitBtn = $('#tl-fit');
+    if (fitBtn) fitBtn.addEventListener('click', fitTimeline);
+    const colBtn = $('#tl-collapse');
+    if (colBtn) colBtn.addEventListener('click', function () {
+      const box = $('#timeline');
+      box.classList.toggle('collapsed');
+      colBtn.textContent = box.classList.contains('collapsed') ? '展开' : '收起';
+    });
+    const keyBtn = $('#tl-key');
+    if (keyBtn) keyBtn.addEventListener('click', keyAllTracks);
+  }
+
+  /** 当前时刻给这个 Pass 的全部轨道补一帧（按钮和 K 键共用） */
+  function keyAllTracks() {
+    const pass = selectedPass();
+    if (!pass) return;
+    const lanes = tracksOf(pass.id);
+    const names = Object.keys(lanes);
+    if (!names.length) {
+      SL.ui.toast('这个 Pass 还没有任何关键帧：先在参数名后面点 ◇ 打一帧，之后就能用「打帧」批量补', 'warn');
+      return;
+    }
+    const t = Math.round(App.time * 1000) / 1000;
+    names.forEach(function (n) {
+      const vals = sampleTrack(lanes[n], t) || pass.values[n] || [0];
+      setKeyframe(pass.id, n, t, vals);
+    });
+    syncTimeline();
+    renderInspector();
+    setDirty();
+    SL.ui.toast('已在 ' + t.toFixed(2) + 's 为 ' + names.length + ' 个参数打帧', 'ok');
+  }
+
   function renderFrame(dt) {
     const out = outputSize();
     const dur = durationOf();
+    // 关键帧先写回 pass.values，shader 才能看到这一帧的动画值
+    applyTracks(App.time);
     const state = {
       output: out,
       passes: App.doc.passes,
@@ -468,7 +948,7 @@ window.SL = window.SL || {};
     updateStats(res.ms, res.gpu);
     updateTimeReadout();
     syncResolutionLabel(out);
-    if (dur > 0) syncScrub();
+    updatePlayhead();
 
     // 逐 Pass 耗时：最多每 600ms 就地更新左栏标签（不重建列表，避免打断拖拽/改名）
     if (res.passMs) {
@@ -614,7 +1094,7 @@ window.SL = window.SL || {};
       doc.ui = SL.deepClone(App.doc.ui);
       doc.ui.playing = App.playing;
       doc.resMode = App.doc.resMode;
-      const next = SL.store.normalize(doc);
+      const next = SL.store.normalize(doc, { allowNewEffect: true });
       applyDoc(next);
       App.time = 0;
       App.frame = 0;
@@ -675,6 +1155,12 @@ window.SL = window.SL || {};
   function buildDocFromEffect(eff) {
     const jobs = (eff.assets || []).map(function (a) {
       if (a.kind === 'builtin') return Promise.resolve({ slot: a.slot, assetId: 'b:' + a.builtin });
+      if (a.kind === 'library') {
+        // 公共图库只存引用：lib:<id> 在启动时已经建好条目
+        const id = 'lib:' + a.libId;
+        if (App.assets.byId(id)) return Promise.resolve({ slot: a.slot, assetId: id });
+        return Promise.resolve({ slot: a.slot, assetId: null });
+      }
       const exist = App.assets.items.filter(function (it) {
         return it.name === a.name && it.kind === 'file';
       })[0];
@@ -723,6 +1209,7 @@ window.SL = window.SL || {};
         loop: eff.loop !== false,
         previewBg: App.doc.previewBg || 'checker',
         passes: passes,
+        timeline: SL.deepClone(eff.tracks || {}),
         selectedPassId: passes[0] ? passes[0].id : null,
         assets: SL.deepClone(App.doc.assets || []),
         ui: SL.deepClone(App.doc.ui)
@@ -743,7 +1230,7 @@ window.SL = window.SL || {};
         return false;
       }
       return buildDocFromEffect(eff).then(function (doc) {
-        const next = SL.store.normalize(doc);
+        const next = SL.store.normalize(doc, { allowNewEffect: true });
         next.ui.playing = true;
         next.ui.zoom = 1;
         applyDoc(next);
@@ -762,20 +1249,8 @@ window.SL = window.SL || {};
     });
   }
 
-  /* ---------------------------- 时间轴 ---------------------------- */
-  function syncScrub() {
-    const row = $('#scrub-row');
-    if (!row) return;
-    const dur = durationOf();
-    if (!(dur > 0)) { row.classList.add('hidden'); return; }
-    row.classList.remove('hidden');
-    const t = SL.clamp(App.time, 0, dur);
-    const el = $('#scrub');
-    if (el && document.activeElement !== el) el.value = String(Math.round((t / dur) * 1000));
-    $('#scrub-time').textContent = t.toFixed(2) + ' / ' + dur.toFixed(2) + 's';
-    const nm = $('#scrub-name');
-    if (nm) nm.textContent = App.playing ? '播放中' : '拖动查看';
-  }
+  /* ---------------------------- 时间轴（旧实现已换成上面的 syncTimeline） ---------------------------- */
+  function syncScrub() { syncTimeline(); }
 
   /* ---------------------------- 预览背景 ---------------------------- */
   const BG_MODES = ['checker', 'dark', 'light', 'source'];
@@ -813,8 +1288,270 @@ window.SL = window.SL || {};
   }
 
   /* ========================================================================
-     五之三、图库浮层：网格 + 标签筛选 + 实时缩略图
+     五之四、新建效果：背景 Pass + 效果 Pass，并导出成效果包
      ====================================================================== */
+  const NEW_BG_CODE = [
+    '// 背景：把这张图铺满整个画面（想换图就在「纹理」页点别的素材）',
+    'uniform sampler2D u_bg;',
+    'uniform float u_zoom;   // @range 0.5 2 @step 0.01 @default 1 @label 缩放',
+    '',
+    'void main() {',
+    '  vec2 uv = (vUv - 0.5) / u_zoom + 0.5;',
+    '  fragColor = vec4(texture(u_bg, uv).rgb, 1.0);',
+    '}'
+  ].join('\n');
+
+  const NEW_FX_CODE = [
+    '// 效果：u_src 是上一个 Pass（背景）的输出，在这里加你要的效果',
+    'uniform sampler2D u_src;',
+    'uniform float u_gain;     // @range 0 2 @step 0.01 @default 1.0 @label 强度',
+    'uniform float u_sweep;    // @range -0.3 1.3 @step 0.01 @default -0.2 @label 扫光位置',
+    'uniform float u_strength; // @range 0 1 @step 0.01 @default 0.45 @label 光强',
+    'uniform vec3  u_color;    // @color @label 光色',
+    '',
+    'void main() {',
+    '  vec3 c = texture(u_src, vUv).rgb * u_gain;',
+    '  // 斜向扫光：用 q*q 而不是 pow(q,2.0)——pow 的底数为负时 GLSL 未定义',
+    '  float q = (vUv.x + vUv.y - u_sweep) / 0.18;',
+    '  float band = exp(-q * q);',
+    '  // 亮部才算光：按底图亮度收一点，避免暗处也被刷成一片白',
+    '  float lum = sl_luma(c);',
+    '  vec3 shine = u_color * band * (0.18 + 0.82 * lum) * u_strength;',
+    '  fragColor = vec4(c + shine, 1.0);',
+    '}'
+  ].join('\n');
+
+  function kebabId(s) {
+    return String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48);
+  }
+
+  function openNewEffect() {
+    const body = SL.h('div', { style: 'display:grid;gap:11px;min-width:420px' });
+    const field = function (label, el, hint) {
+      const wrap = SL.h('div', { class: 'ef-row' });
+      wrap.appendChild(SL.h('label', { text: label }));
+      const box = SL.h('div', { style: 'display:flex;flex-direction:column;gap:3px;min-width:0' });
+      box.appendChild(el);
+      if (hint) box.appendChild(SL.h('div', { class: 'insp-note', style: 'padding:0', text: hint }));
+      wrap.appendChild(box);
+      return wrap;
+    };
+
+    const nameIn = SL.h('input', { class: 'inp', type: 'text', placeholder: '例如：刀光 · 横扫', value: '' });
+    const idIn = SL.h('input', { class: 'inp', type: 'text', placeholder: 'my-effect', style: 'font-family:var(--mono)' });
+    const tagsIn = SL.h('input', { class: 'inp', type: 'text', placeholder: '刀光, 一次性, alpha' });
+    const durIn = SL.h('input', { class: 'inp', type: 'number', min: '0', step: '0.05', value: '1' });
+    const loopCb = SL.h('input', { type: 'checkbox', checked: true });
+    const alphaCb = SL.h('input', { type: 'checkbox' });
+    const bgSel = SL.h('select', { class: 'sel' });
+    App.assets.items.forEach(function (a) {
+      bgSel.appendChild(SL.h('option', { value: a.id, text: a.name + '  ' + a.width + '×' + a.height }));
+    });
+    if (App.doc.source) bgSel.value = App.doc.source;
+
+    nameIn.addEventListener('input', function () {
+      if (!idIn.dataset.touched) idIn.value = kebabId(nameIn.value);
+    });
+    idIn.addEventListener('input', function () { idIn.dataset.touched = '1'; });
+
+    body.appendChild(field('名称', nameIn));
+    body.appendChild(field('效果 id', idIn, '会成为目录名：effects/<id>/，只能用 a-z 0-9 和短横线；留空就自动生成'));
+    body.appendChild(field('标签', tagsIn, '逗号分隔，图库里按标签筛选用'));
+    body.appendChild(field('时长（秒）', durIn, '0 = 无限时间（u_time 一直涨）；大于 0 时可以循环播放，也能打关键帧'));
+    body.appendChild(field('背景图', bgSel, '第一个 Pass 用它铺底，第二个 Pass 在它上面做效果'));
+    body.appendChild(field('播放', SL.h('label', { class: 'switch-label' }, loopCb, SL.h('span', { class: 'sw' }), SL.h('span', { text: '循环' }))));
+    body.appendChild(field('输出', SL.h('label', { class: 'switch-label' }, alphaCb, SL.h('span', { class: 'sw' }), SL.h('span', { text: '透明背景（alpha）' }))));
+
+    const cancel = SL.h('button', { class: 'btn', text: '取消' });
+    const ok = SL.h('button', { class: 'btn primary', text: '创建并打开' });
+    const m = SL.ui.modal({ title: '新建效果', icon: 'plus', body: body, footer: [SL.h('span', { class: 'grow' }), cancel, ok] });
+    cancel.addEventListener('click', m.close);
+
+    ok.addEventListener('click', function () {
+      const name = (nameIn.value || '').trim();
+      if (!name) { SL.ui.toast('先给它起个名字', 'warn'); nameIn.focus(); return; }
+      // 名称是中文时 kebabId 会得到空串，这时自动生成一个可用的 id
+      const id = kebabId(idIn.value || '') || kebabId(name) || ('fx-' + Date.now().toString(36).slice(-5));
+      if (!/^[a-z0-9][a-z0-9-]*$/.test(id)) { SL.ui.toast('id 只能是 a-z 0-9 和短横线', 'warn'); return; }
+      const exists = (window.SL_EFFECTS && window.SL_EFFECTS.effects || []).some(function (e) { return e.id === id; });
+      if (exists) { SL.ui.toast('效果库里已经有「' + id + '」了，换个 id', 'warn'); return; }
+
+      const dur = Math.max(0, Number(durIn.value) || 0);
+      const loop = loopCb.checked;
+      const bgId = bgSel.value;
+      const doc = makeEffectDraft({
+        id: id,
+        name: name || id,
+        tags: (tagsIn.value || '').split(/[,，]/).map(function (s) { return s.trim(); }).filter(Boolean),
+        duration: dur,
+        loop: loop,
+        alpha: alphaCb.checked,
+        bgAssetId: bgId
+      });
+      const next = SL.store.normalize(doc, { allowNewEffect: true });
+      next.ui.playing = true;
+      next.ui.zoom = 1;
+      applyDoc(next);
+      App.time = 0;
+      App.frame = 0;
+      App.playing = true;
+      syncPlayButton();
+      syncTimeline();
+      $('#preset-select').value = next.presetId;
+      if ($('#preset-select').value !== next.presetId) {
+        // 新效果还不在 index 里，先塞一个临时 option，免得选择框跳回默认预设
+        const op = SL.h('option', { value: next.presetId, text: '（未落盘）' + (name || id) });
+        $('#preset-select').appendChild(op);
+        $('#preset-select').value = next.presetId;
+      }
+      m.close();
+      SL.store.save(next);
+      offerEffectExport(id, name || id);
+    });
+  }
+
+  /** 根据表单生成一份「背景 Pass + 效果 Pass」的草稿文档 */
+  function makeEffectDraft(cfg) {
+    const bgAsset = App.assets.byId(cfg.bgAssetId) || App.assets.items[0];
+    const dur = Math.max(0, Number(cfg.duration) || 0);
+    const passes = [{
+      id: 'p1',
+      name: '背景',
+      code: NEW_BG_CODE,
+      enabled: true,
+      format: 'rgba8',
+      scale: 1,
+      filter: 'linear',
+      wrap: 'clamp',
+      bindings: { u_bg: { kind: 'asset', assetId: bgAsset ? bgAsset.id : 'b:testcard' } },
+      values: { u_zoom: [1] }
+    }, {
+      id: 'p2',
+      name: '效果',
+      code: NEW_FX_CODE,
+      enabled: true,
+      format: 'rgba8',
+      scale: 1,
+      filter: 'linear',
+      wrap: 'clamp',
+      bindings: { u_src: { kind: 'prev' } },
+      values: { u_gain: [1], u_sweep: [-0.2], u_strength: [0.45], u_color: [1, 0.96, 0.88] }
+    }];
+    // 一次性/循环效果先送一条扫光动画，打开就能拖时间轴看到变化
+    const timeline = {
+      p2: {
+        u_sweep: [
+          { t: 0, v: [-0.2], e: 'inout' },
+          { t: dur > 0 ? dur : 1.2, v: [1.4], e: 'inout' }
+        ]
+      }
+    };
+    return {
+      presetId: 'effect:' + cfg.id,
+      effectId: cfg.id,
+      effectBuiltAt: null,
+      custom: false,
+      source: bgAsset ? bgAsset.id : 'b:testcard',
+      output: { w: 1280, h: 720 },
+      resMode: App.doc.resMode,
+      alpha: !!cfg.alpha,
+      duration: dur,
+      loop: cfg.loop,
+      previewBg: App.doc.previewBg || 'checker',
+      passes: passes,
+      timeline: timeline,
+      effectName: cfg.name || cfg.id,
+      effectTags: cfg.tags || [],
+      selectedPassId: 'p2',
+      assets: SL.deepClone(App.doc.assets || []),
+      ui: SL.deepClone(App.doc.ui || {})
+    };
+  }
+
+  /** 把当前文档导出成效果包 JSON（交给 node tools/lib.mjs import 落盘） */
+  function effectPackFromDoc(id, name) {
+    // 文档里的 passId 可能不是 p1..pN，导出时按顺序重新编号
+    const passIndex = {};
+    App.doc.passes.forEach(function (p, i) { passIndex[p.id] = 'p' + (i + 1); });
+
+    const inputs = {};
+    const shaders = {};
+    const passes = App.doc.passes.map(function (p, i) {
+      const file = 'shaders/p' + (i + 1) + '.frag';
+      shaders[file] = p.code;
+      const bindings = {};
+      Object.keys(p.bindings || {}).forEach(function (slot) {
+        const b = p.bindings[slot];
+        if (b.kind === 'asset') {
+          const a = App.assets.byId(b.assetId);
+          const inputName = slot.replace(/^u_/, '') || slot;
+          if (a && a.kind === 'library') inputs[inputName] = 'library:' + a.libId;
+          else if (a && a.kind === 'builtin') inputs[inputName] = 'builtin:' + a.builtin;
+          else if (a && a.dataURL) inputs[inputName] = a.dataURL;   // 拖进来的图：内联，import 时落成 input/<名字>.png
+          else return;                                              // 找不到图就不带这个绑定
+          bindings[slot] = { kind: 'asset', input: inputName };
+        } else if (b.kind === 'pass') {
+          const target = b.passId === '__source__' ? 'p1' : (passIndex[b.passId] || 'p1');
+          bindings[slot] = { kind: 'pass', pass: target };
+        } else {
+          bindings[slot] = { kind: b.kind };
+        }
+      });
+      return { name: p.name, shader: file, format: p.format, scale: p.scale, bindings: bindings, values: p.values };
+    });
+
+    const eff = {
+      id: id,
+      name: name || App.doc.effectName || id,
+      desc: '',
+      tags: App.doc.effectTags || [],
+      duration: App.doc.duration || 0,
+      loop: App.doc.loop !== false,
+      output: { w: App.doc.output.w, h: App.doc.output.h, alpha: !!App.doc.alpha },
+      inputs: inputs,
+      passes: passes,
+      tracks: App.doc.timeline || {}
+    };
+    return { version: 1, effect: eff, shaders: shaders };
+  }
+
+  function offerEffectExport(id, name) {
+    const body = SL.h('div', { style: 'display:grid;gap:10px;min-width:440px' });
+    body.appendChild(SL.h('p', {
+      style: 'margin:0;font-size:12.5px;color:var(--text-2);line-height:1.7',
+      html: '已经在编辑器里打开了。要让它进「效果库」，用下面任意一种方式落盘：'
+    }));
+    const download = SL.h('button', { class: 'btn primary', text: '下载效果包 JSON' });
+    const cmd = 'node tools/lib.mjs import ' + id + '.effect.json';
+    const codeEl = SL.h('code', {
+      style: 'display:block;padding:8px 10px;background:var(--bg-code);border:1px solid var(--line);border-radius:6px;font-family:var(--mono);font-size:11.5px;color:var(--text-2);user-select:all',
+      text: cmd
+    });
+    const copyBtn = SL.h('button', { class: 'btn tiny', text: '复制命令' });
+    const row = SL.h('div', { style: 'display:flex;gap:6px;align-items:center' }, download, copyBtn);
+    body.appendChild(row);
+    body.appendChild(SL.h('div', { class: 'insp-note', style: 'padding:0', text: '下载后在仓库根目录执行：' }));
+    body.appendChild(codeEl);
+    body.appendChild(SL.h('div', {
+      class: 'insp-note',
+      style: 'padding:0',
+      text: '落盘后再跑 node tools/lib.mjs build，刷新页面就能在效果库里看到它。'
+    }));
+
+    download.addEventListener('click', function () {
+      const pack = effectPackFromDoc(id, name);
+      SL.io.download(id + '.effect.json', JSON.stringify(pack, null, 2), 'application/json');
+      SL.ui.toast('已下载 ' + id + '.effect.json', 'ok');
+    });
+    copyBtn.addEventListener('click', function () {
+      copyText(cmd);
+    });
+    const done = SL.h('button', { class: 'btn', text: '知道了' });
+    const m = SL.ui.modal({ title: '保存这个效果', icon: 'download', body: body, footer: [SL.h('span', { class: 'grow' }), done] });
+    done.addEventListener('click', m.close);
+  }
+
+
   const libTags = [];      // 已选标签（空 = 全部）
   const libThumbs = {};    // effectId → dataURL
   let libQuery = '';
@@ -1850,7 +2587,12 @@ window.SL = window.SL || {};
         assets: App.assets,
         uniforms: uni,
         isFirst: App.doc.passes.indexOf(pass) === 0,
-        onValueChange: function (name) {
+        onValueChange: function (name, values) {
+          // 这个参数已经有动画 → 拖动就是改当前时刻那一帧（自动打帧）
+          if (trackOf(pass.id, name)) {
+            setKeyframe(pass.id, name, Math.round(App.time * 1000) / 1000, values);
+            syncTimeline();
+          }
           App.needsRender = true;
           setDirty();
         },
@@ -1858,6 +2600,9 @@ window.SL = window.SL || {};
           App.needsRender = true;
           setDirty();
         },
+        hasTrack: function (name) { return !!trackOf(pass.id, name); },
+        keyAt: function (name) { return !!keyframeAt(pass.id, name, App.time); },
+        onKeyframe: function (name, values) { toggleKeyframe(pass.id, name, values); },
         onRefresh: function () { renderInspector(); },
         bindingSize: bindingSize
       });
@@ -1944,53 +2689,68 @@ window.SL = window.SL || {};
     sec.appendChild(selWrap);
     host.appendChild(sec);
 
-    // 资源库
-    const sec2 = SL.h('div', { class: 'insp-section' });
-    const h2 = SL.h('div', { class: 'insp-head' });
-    h2.appendChild(SL.h('span', { text: '资源库' }));
-    h2.appendChild(SL.h('span', { class: 'count', text: String(App.assets.items.length) }));
-    sec2.appendChild(h2);
+    // 资源列表：公共图库（library/ 里的素材）和用户导入的图分开列
+    const cardGrid = function (items) {
+      const grid = SL.h('div', { class: 'asset-grid' });
+      items.forEach(function (a) {
+        const isSrc = srcEntry && a.id === srcEntry.id;
+        const card = SL.h('div', { class: 'asset' + (isSrc ? ' bound' : '') });
+        const img = SL.h('img', { class: 'asset-thumb', src: App.assets.thumb(a), alt: a.name });
+        img.addEventListener('click', function () {
+          App.doc.source = a.id;
+          App.needsRender = true;
+          renderTextures(host);
+          setDirty();
+        });
+        card.appendChild(img);
+        const bodyEl = SL.h('div', { class: 'asset-body' });
+        bodyEl.appendChild(SL.h('div', { class: 'asset-name', text: a.name, title: a.name }));
+        bodyEl.appendChild(SL.h('div', {
+          class: 'asset-meta',
+          text: a.width + '×' + a.height + ' · ' + (a.kind === 'builtin' ? '内置' : a.kind === 'library' ? '图库' : '导入')
+        }));
+        card.appendChild(bodyEl);
 
-    const grid = SL.h('div', { class: 'asset-grid' });
-    App.assets.items.forEach(function (a) {
-      const isSrc = srcEntry && a.id === srcEntry.id;
-      const card = SL.h('div', { class: 'asset' + (isSrc ? ' bound' : '') });
-      const img = SL.h('img', { class: 'asset-thumb', src: App.assets.thumb(a), alt: a.name });
-      img.addEventListener('click', function () {
-        App.doc.source = a.id;
-        App.needsRender = true;
-        renderTextures(host);
-        setDirty();
+        const acts = SL.h('div', { class: 'asset-acts' });
+        const useBtn = SL.h('button', { class: 'btn tiny' + (isSrc ? ' primary' : ''), text: isSrc ? '使用中' : '用作输入' });
+        useBtn.addEventListener('click', function () {
+          App.doc.source = a.id;
+          App.needsRender = true;
+          renderTextures(host);
+          setDirty();
+        });
+        acts.appendChild(useBtn);
+        const moreBtn = SL.h('button', { class: 'btn tiny', text: '参数' });
+        moreBtn.addEventListener('click', function (e) {
+          e.stopPropagation();
+          openAssetMenu(a, moreBtn, function () { renderTextures(host); });
+        });
+        acts.appendChild(moreBtn);
+        card.appendChild(acts);
+        grid.appendChild(card);
       });
-      card.appendChild(img);
-      const bodyEl = SL.h('div', { class: 'asset-body' });
-      bodyEl.appendChild(SL.h('div', { class: 'asset-name', text: a.name, title: a.name }));
-      bodyEl.appendChild(SL.h('div', {
-        class: 'asset-meta',
-        text: a.width + '×' + a.height + ' · ' + (a.kind === 'builtin' ? '内置' : '导入')
-      }));
-      card.appendChild(bodyEl);
+      return grid;
+    };
 
-      const acts = SL.h('div', { class: 'asset-acts' });
-      const useBtn = SL.h('button', { class: 'btn tiny' + (isSrc ? ' primary' : ''), text: isSrc ? '使用中' : '用作输入' });
-      useBtn.addEventListener('click', function () {
-        App.doc.source = a.id;
-        App.needsRender = true;
-        renderTextures(host);
-        setDirty();
-      });
-      acts.appendChild(useBtn);
-      const moreBtn = SL.h('button', { class: 'btn tiny', text: '参数' });
-      moreBtn.addEventListener('click', function (e) {
-        e.stopPropagation();
-        openAssetMenu(a, moreBtn, function () { renderTextures(host); });
-      });
-      acts.appendChild(moreBtn);
-      card.appendChild(acts);
-      grid.appendChild(card);
+    [{
+      title: '公共图库',
+      items: App.assets.items.filter(function (a) { return a.kind === 'library'; }),
+      note: '放在 library/ 里的公共素材（跑过 build 就有）。点缩略图直接当输入图。'
+    }, {
+      title: '资源库',
+      items: App.assets.items.filter(function (a) { return a.kind !== 'library'; }),
+      note: null
+    }].forEach(function (g) {
+      if (!g.items.length) return;
+      const sec = SL.h('div', { class: 'insp-section' });
+      const hd = SL.h('div', { class: 'insp-head' });
+      hd.appendChild(SL.h('span', { text: g.title }));
+      hd.appendChild(SL.h('span', { class: 'count', text: String(g.items.length) }));
+      sec.appendChild(hd);
+      sec.appendChild(cardGrid(g.items));
+      if (g.note) sec.appendChild(SL.h('div', { class: 'insp-note', text: g.note }));
+      host.appendChild(sec);
     });
-    sec2.appendChild(grid);
-    host.appendChild(sec2);
 
     host.appendChild(SL.h('div', {
       class: 'insp-note',
@@ -2171,6 +2931,11 @@ window.SL = window.SL || {};
   function bindTopbar() {
     $('#preset-select').addEventListener('change', function (e) {
       const v = e.target.value;
+      if (v === '__new') {
+        e.target.value = App.doc.presetId || 'start';
+        openNewEffect();
+        return;
+      }
       if (v.indexOf('effect:') === 0) loadEffect(v.slice(7));
       else loadPreset(v);
     });
@@ -2179,27 +2944,16 @@ window.SL = window.SL || {};
     $('#btn-reset-time').addEventListener('click', resetTime);
 
     $('#btn-library').addEventListener('click', openLibrary);
+    $('#btn-new-effect').addEventListener('click', function () {
+      if (libraryOpen()) closeLibrary();
+      openNewEffect();
+    });
     $('#lib-close').addEventListener('click', closeLibrary);
     $('#lib-search').addEventListener('input', function (e) {
       libQuery = e.target.value || '';
       renderLibrary();
     });
     $('#btn-bg').addEventListener('click', cyclePreviewBg);
-
-    const scrub = $('#scrub');
-    if (scrub) {
-      scrub.addEventListener('input', function (e) {
-        const dur = durationOf();
-        if (!(dur > 0)) return;
-        App.playing = false;
-        App.doc.ui.playing = false;
-        syncPlayButton();
-        App.time = (Number(e.target.value) / 1000) * dur;
-        App.needsRender = true;
-        syncScrub();
-      });
-      scrub.addEventListener('change', function () { App.save && App.save(); });
-    }
 
     $('#btn-shot').addEventListener('click', function () {
       try {
@@ -2408,6 +3162,10 @@ window.SL = window.SL || {};
           e.preventDefault(); cyclePass(1); break;
         case 'n': case 'N':
           e.preventDefault(); addPass(); break;
+        case 'k': case 'K':
+          e.preventDefault(); keyAllTracks(); break;
+        case 't': case 'T':
+          e.preventDefault(); togglePass(selectedPass()); break;
         case 'Delete':
           e.preventDefault(); deletePass(selectedPass()); break;
         case '1': e.preventDefault(); setTab('uniforms'); break;
@@ -2543,6 +3301,11 @@ window.SL = window.SL || {};
     };
 
     add('操作', '打开效果库', 'Ctrl+L', 'grid', openLibrary);
+    add('操作', '新建效果…', '', 'plus', openNewEffect, '背景 Pass + 效果 Pass 起步，可导出成效果包');
+    add('操作', '导出效果包 JSON', '', 'download', function () {
+      const id = App.doc.effectId || kebabId(App.doc.effectName || '') || ('fx-' + Date.now().toString(36).slice(-5));
+      offerEffectExport(id, App.doc.effectName || id);
+    }, '把当前文档重新打包，供 tools/lib.mjs import');
     add('操作', '切换预览背景', '', 'image', cyclePreviewBg);
     add('操作', '播放 / 暂停', 'Space', 'play', togglePlay);
     add('操作', '单步前进', '→', 'step', function () { stepFrame(1); });
@@ -2743,6 +3506,7 @@ window.SL = window.SL || {};
       '<li>左上「预设」挑一个示例，先看效果。</li>',
       '<li>下方编辑器改 shader，改完自动重新编译（也可 <kbd>Ctrl</kbd>+<kbd>↵</kbd> 立即编译）。</li>',
       '<li>右侧「Uniforms」调参数、「纹理」换输入图；左栏「新增 Pass」搭后处理链。</li>',
+      '<li>要做动画：在这个参数名后面点 <code>◇</code> 打一帧，拖时间轴再改值就会自动补帧。</li>',
       '</ol>',
       '<h3>着色器里能直接用东西</h3>',
       '<table>',
@@ -2785,6 +3549,21 @@ window.SL = window.SL || {};
       '<p>效果包里写 <code>"loop": false</code> + <code>"duration"</code> 时，预览下方会出现时间轴，拖到任意时刻定格；' +
       'shader 里用 <code>u_t01</code>（0→1）驱动扫光进度，别再用 u_time 取模。</p>',
       '<p><code>"output": { "alpha": true }</code> 表示输出带透明通道，预览会叠在背景上（棋盘格 / 深色 / 浅色 / 输入图，用预览右上角的「背景」按钮切）。</p>',
+      '<h3>时间轴与关键帧</h3>',
+      '<ul>',
+      '<li>预览下方是时间轴：没写时长的效果时间一直递增（「无限时间」）；写了 <code>duration</code> 且 <code>loop</code> 为真时循环绕圈，' +
+      '为假时播到末尾停住。</li>',
+      '<li>点 / 拖时间轴定位；双击轨道在那一帧补一个关键帧；点关键帧改「到下一帧的缓动」（线性 / 缓入 / 缓出 / 缓入缓出 / 阶跃）。</li>',
+      '<li>右侧每个参数后面有个 <code>◇</code>：点一下就在当前时刻打帧，变成 <code>◆</code> 表示这个参数有动画。' +
+      '已经有动画的参数，直接拖滑块就会在当前时刻自动写帧。</li>',
+      '<li>顶栏时间轴右侧的「打帧」按钮（或 <kbd>K</kbd>）把当前 Pass 的所有轨道在这一帧补齐。</li>',
+      '</ul>',
+      '<h3>公共图库与新建效果</h3>',
+      '<p>素材图放到 <code>library/</code>（png / jpg / webp），跑一次 <code>node tools/lib.mjs build</code> 就会出现在「纹理」页的「公共图库」里，' +
+      '可以直接当输入图或背景图用；效果包的 <code>inputs</code> 里写 <code>"library:文件名"</code> 也能引用它。</p>',
+      '<p>新建效果：效果库面板右上角「＋ 新建效果」、预设下拉最后一项、或命令面板里搜「新建效果」。' +
+      '会得到两个 Pass——<b>p1 背景</b>（铺底图）和 <b>p2 效果</b>（在上一个 Pass 上做效果），并预置一条扫光关键帧。' +
+      '做完点「导出效果包 JSON」下载，然后 <code>node tools/lib.mjs import 文件名.effect.json</code> + <code>build</code> 就进库了。</p>',
       '<h3>快捷键</h3>',
       '<table class="keys-grid">',
       '<tr><td><kbd>Ctrl</kbd>+<kbd>K</kbd></td><td>命令面板：搜命令 / 预设 / 效果 / Pass / 贴图</td></tr>',
@@ -2797,6 +3576,7 @@ window.SL = window.SL || {};
       '<tr><td><kbd>Z</kbd></td><td>专注模式（只留预览，<kbd>Esc</kbd> 退出）</td></tr>',
       '<tr><td><kbd>[</kbd> <kbd>]</kbd></td><td>上一个 / 下一个 Pass</td></tr>',
       '<tr><td><kbd>N</kbd> / <kbd>Ctrl</kbd>+<kbd>D</kbd></td><td>新增 Pass / 复制当前 Pass</td></tr>',
+      '<tr><td><kbd>K</kbd></td><td>当前时刻给这个 Pass 的所有轨道打帧</td></tr>',
       '<tr><td><kbd>Ctrl</kbd>+<kbd>E</kbd> / <kbd>Del</kbd></td><td>启用或停用 / 删除当前 Pass</td></tr>',
       '<tr><td><kbd>Ctrl</kbd>+<kbd>↑</kbd> <kbd>↓</kbd></td><td>上移 / 下移当前 Pass</td></tr>',
       '<tr><td><kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd></td><td>切到 Uniforms / 纹理 / 信息</td></tr>',
@@ -2865,6 +3645,10 @@ window.SL = window.SL || {};
       return buildDocFromEffect(eff).then(function (doc) { return SL.store.normalize(doc); });
     },
     loadEffect: loadEffect,
+    // 当前文档打包成效果包（等价于点「下载效果包 JSON」）
+    pack: function (id, name) {
+      return effectPackFromDoc(id || App.doc.effectId || 'effect-draft', name || App.doc.effectName || '效果');
+    },
     thumb: function (id) {
       return SL.test.effectDoc(id).then(function (doc) {
         return doc ? renderEffectThumb(doc) : null;

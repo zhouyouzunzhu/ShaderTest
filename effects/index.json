@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "builtAt": "2026-11-16T07:12:47.382Z",
+  "builtAt": "2026-11-16T08:03:53.064Z",
   "effects": [
     {
       "id": "item-shine",
@@ -42,7 +42,27 @@
           },
           "values": {}
         }
-      ]
+      ],
+      "tracks": {
+        "p1": {
+          "u_width": [
+            {
+              "t": 0,
+              "v": [
+                0.12
+              ],
+              "e": "inout"
+            },
+            {
+              "t": 0.9,
+              "v": [
+                0.03
+              ],
+              "e": "linear"
+            }
+          ]
+        }
+      }
     },
     {
       "id": "outline-flash",
@@ -98,7 +118,8 @@
           },
           "values": {}
         }
-      ]
+      ],
+      "tracks": {}
     },
     {
       "id": "slash-arc",
@@ -129,7 +150,8 @@
           "bindings": {},
           "values": {}
         }
-      ]
+      ],
+      "tracks": {}
     },
     {
       "id": "water-ripple",
@@ -179,7 +201,8 @@
           },
           "values": {}
         }
-      ]
+      ],
+      "tracks": {}
     }
   ]
 }

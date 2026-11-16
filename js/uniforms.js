@@ -266,6 +266,26 @@ window.SL = window.SL || {};
       inp.addEventListener('blur', function () { commit(true); });
     });
 
+    // 打关键帧按钮：◇ = 还没有动画，◆ = 有动画，实心 = 当前时刻正好有一帧
+    if (ctx.onKeyframe && u.kind !== 'mat') {
+      const has = ctx.hasTrack ? ctx.hasTrack(u.name) : false;
+      const at = ctx.keyAt ? ctx.keyAt(u.name) : false;
+      const kf = SL.h('button', {
+        class: 'kf-btn' + (has ? ' has' : '') + (at ? ' on' : ''),
+        type: 'button',
+        text: has ? '◆' : '◇',
+        title: has
+          ? (at ? '当前时刻已有关键帧，点一下删除' : '在当前位置再打一帧')
+          : '在当前位置给 ' + u.name + ' 打关键帧'
+      });
+      kf.addEventListener('click', function (ev) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        ctx.onKeyframe(u.name, values);
+      });
+      top.appendChild(kf);
+    }
+
     return row;
   }
 

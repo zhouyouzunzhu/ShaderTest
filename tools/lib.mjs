@@ -2,35 +2,65 @@
 /**
  * 效果库构建工具
  *
- *   node tools/lib.mjs build     扫描 effects/，校验并生成 effects/index.json + effects/index.js
- *   node tools/lib.mjs check     只校验，不写文件
- *   node tools/lib.mjs list      列出已有效果
+ *   node tools/lib.mjs build          扫描 effects/ 与 library/，校验并生成两份索引
+ *   node tools/lib.mjs check          只校验，不写文件
+ *   node tools/lib.mjs list           列出已有效果与图库素材
+ *   node tools/lib.mjs import <file>  把页面导出的效果包 JSON 落成 effects/<id>/ 目录
  *
  * 为什么要有 index.js：页面用 file:// 直接双击打开时 fetch() 会被 CORS 拦住，
- * 用 <script src="effects/index.js"> 设置 window.SL_EFFECTS 是唯一稳妥的读法。
+ * 用 <script src=".../index.js"> 设置 window.SL_EFFECTS / window.SL_LIBRARY 是唯一稳妥的读法。
  * index.json 给 AI / 工具 / 外部脚本读。
  */
-import { readdir, readFile, writeFile, stat } from 'node:fs/promises';
+import { readdir, readFile, writeFile, mkdir, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const EFFECTS_DIR = path.join(ROOT, 'effects');
+const LIBRARY_DIR = path.join(ROOT, 'library');
 const OUT_JSON = path.join(EFFECTS_DIR, 'index.json');
 const OUT_JS = path.join(EFFECTS_DIR, 'index.js');
+const OUT_LIB_JS = path.join(LIBRARY_DIR, 'index.js');
+const OUT_LIB_JSON = path.join(LIBRARY_DIR, 'index.json');
 
 const ID_RE = /^[a-z0-9][a-z0-9-]*$/;
 const MAX_EDGE = 4096;
+const IMAGE_EXT = new Set(['.png', '.jpg', '.jpeg', '.webp']);
+const EASINGS = new Set(['linear', 'in', 'out', 'inout', 'step']);
 
 const isObj = (v) => v && typeof v === 'object' && !Array.isArray(v);
 const isNum = (v) => typeof v === 'number' && Number.isFinite(v);
+
+/** 从文件头读图片尺寸（PNG / JPEG），读不到就返回 0 —— 只为给页面省一次解码 */
+function imageSize(buf, ext) {
+  if (ext === '.png' && buf.length > 24 && buf.readUInt32BE(12) === 0x49484452) {
+    return { w: buf.readUInt32BE(16), h: buf.readUInt32BE(20) };
+  }
+  if (ext === '.jpg' || ext === '.jpeg') {
+    let i = 2;
+    while (i + 9 < buf.length) {
+      if (buf[i] !== 0xff) { i++; continue; }
+      const marker = buf[i + 1];
+      if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) {
+        return { w: buf.readUInt16BE(i + 7), h: buf.readUInt16BE(i + 5) };
+      }
+      if (marker === 0xd8 || marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) { i += 2; continue; }
+      const len = buf.readUInt16BE(i + 2);
+      i += 2 + len;
+    }
+  }
+  return { w: 0, h: 0 };
+}
+
+const kebab = (s) => String(s).toLowerCase().replace(/\.[a-z0-9]+$/i, '')
+  .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || 'item';
 
 function err(list, where, msg) {
   list.push(`${where}: ${msg}`);
 }
 
 /** 读取并校验单个效果包 */
-async function loadEffect(dirName, problems) {
+async function loadEffect(dirName, problems, libMap) {
   const dir = path.join(EFFECTS_DIR, dirName);
   const where = `effects/${dirName}`;
   const jsonPath = path.join(dir, 'effect.json');
@@ -74,8 +104,23 @@ async function loadEffect(dirName, problems) {
       assets.push({ slot, kind: 'builtin', builtin: def.slice(8) });
       continue;
     }
+    if (typeof def === 'string' && def.startsWith('library:')) {
+      // 公共图库里的素材：只记引用，不把图复制进效果包
+      const libId = def.slice(8);
+      if (!libMap[libId]) {
+        err(problems, where, `inputs.${slot} 引用的图库素材不存在：${libId}（把图放进 library/ 再跑 build）`);
+        continue;
+      }
+      assets.push({ slot, kind: 'library', libId, name: libMap[libId].name });
+      continue;
+    }
     const file = typeof def === 'string' ? def : def && def.file;
-    if (!file) { err(problems, where, `inputs.${slot} 需要写成 "builtin:名字" 或 "input/xx.png"`); continue; }
+    if (!file) { err(problems, where, `inputs.${slot} 需要写成 "builtin:名字"、"library:名字" 或 "input/xx.png"`); continue; }
+    if (typeof def === 'string' && def.startsWith('data:')) {
+      // 页面导出的效果包会内联用户拖进来的贴图，import 时会落成 input/xx.png
+      err(problems, where, `inputs.${slot} 里是内联图片，请用 \`node tools/lib.mjs import\` 导入这个效果包`);
+      continue;
+    }
     const abs = path.join(dir, file);
     try {
       const buf = await readFile(abs);
@@ -171,6 +216,42 @@ async function loadEffect(dirName, problems) {
     }
   }
 
+  // ---- 关键帧轨道：tracks.<passId>.<uniformName> = [{t,v,e}] ----
+  const tracks = {};
+  if (raw.tracks != null) {
+    if (!isObj(raw.tracks)) err(problems, where, 'tracks 必须是对象：{ "p1": { "u_x": [{t,v,e}] } }');
+    else {
+      for (const pid of Object.keys(raw.tracks)) {
+        if (!passIds.has(pid)) { err(problems, where, `tracks.${pid} 不是已存在的 Pass`); continue; }
+        const uTracks = raw.tracks[pid];
+        if (!isObj(uTracks)) { err(problems, where, `tracks.${pid} 必须是对象`); continue; }
+        const out = {};
+        for (const name of Object.keys(uTracks)) {
+          const keys = uTracks[name];
+          if (!Array.isArray(keys)) { err(problems, where, `tracks.${pid}.${name} 必须是数组`); continue; }
+          const cleaned = [];
+          for (let k = 0; k < keys.length; k++) {
+            const key = keys[k];
+            if (!isObj(key) || !isNum(key.t) || key.t < 0) {
+              err(problems, where, `tracks.${pid}.${name}[${k}] 需要 { t: 秒（≥0）, v: 数值数组 }`);
+              continue;
+            }
+            const v = Array.isArray(key.v) ? key.v.map(Number) : [Number(key.v)];
+            if (!v.length || v.some((x) => !Number.isFinite(x))) {
+              err(problems, where, `tracks.${pid}.${name}[${k}].v 必须是数值数组`);
+              continue;
+            }
+            const e = EASINGS.has(key.e) ? key.e : 'linear';
+            cleaned.push({ t: key.t, v, e });
+          }
+          cleaned.sort((a, b) => a.t - b.t);
+          if (cleaned.length) out[name] = cleaned;
+        }
+        if (Object.keys(out).length) tracks[pid] = out;
+      }
+    }
+  }
+
   return {
     id,
     name: raw.name || id,
@@ -181,11 +262,12 @@ async function loadEffect(dirName, problems) {
     output: { w, h, alpha: !!out.alpha },
     source: typeof raw.source === 'string' ? raw.source : '',
     assets,
-    passes
+    passes,
+    tracks
   };
 }
 
-async function scan(problems) {
+async function scan(problems, libMap) {
   let dirs = [];
   try {
     const ents = await readdir(EFFECTS_DIR, { withFileTypes: true });
@@ -196,7 +278,7 @@ async function scan(problems) {
   }
   const effects = [];
   for (const d of dirs) {
-    const eff = await loadEffect(d, problems);
+    const eff = await loadEffect(d, problems, libMap);
     if (eff) effects.push(eff);
   }
   const seen = new Set();
@@ -207,12 +289,62 @@ async function scan(problems) {
   return effects;
 }
 
+/** 扫描 library/：公共图库素材（图片内联成 dataURL，file:// 下才能当纹理用） */
+async function scanLibrary(problems) {
+  const items = [];
+  let files = [];
+  try {
+    const ents = await readdir(LIBRARY_DIR, { withFileTypes: true });
+    files = ents.filter((e) => e.isFile() && IMAGE_EXT.has(path.extname(e.name).toLowerCase()))
+      .map((e) => e.name).sort();
+  } catch (e) {
+    problems.push(`library/: 目录不存在或读不了（${e.message}）`);
+    return items;
+  }
+  let total = 0;
+  for (const name of files) {
+    const ext = path.extname(name).toLowerCase();
+    const abs = path.join(LIBRARY_DIR, name);
+    let buf;
+    try {
+      buf = await readFile(abs);
+    } catch (e) {
+      problems.push(`library/${name}: 读不了（${e.message}）`);
+      continue;
+    }
+    const id = kebab(name);
+    if (items.some((it) => it.id === id)) {
+      problems.push(`library/${name}: 生成的 id「${id}」和别的文件撞了，改个文件名`);
+      continue;
+    }
+    const mime = ext === '.webp' ? 'image/webp' : (ext === '.jpg' || ext === '.jpeg') ? 'image/jpeg' : 'image/png';
+    const size = imageSize(buf, ext);
+    total += buf.length;
+    items.push({
+      id,
+      name: name.replace(/\.[a-z0-9]+$/i, '').replace(/[_-]+/g, ' ').trim(),
+      file: `library/${name}`,
+      bytes: buf.length,
+      w: size.w,
+      h: size.h,
+      dataURL: `data:${mime};base64,${buf.toString('base64')}`
+    });
+  }
+  if (total > 6 * 1024 * 1024) {
+    problems.push(`library/: 素材合计 ${(total / 1048576).toFixed(1)}MB，内联进 index.js 后页面会明显变慢，建议压到 6MB 以内`);
+  }
+  return items;
+}
+
 async function build({ write }) {
   const problems = [];
-  const effects = await scan(problems);
+  const library = await scanLibrary(problems);
+  const libMap = {};
+  for (const it of library) libMap[it.id] = it;
+  const effects = await scan(problems, libMap);
 
   if (problems.length) {
-    console.error(`\n✗ 效果库校验失败（${problems.length} 处）\n`);
+    console.error(`\n✗ 校验失败（${problems.length} 处）\n`);
     for (const p of problems) console.error('  · ' + p);
     console.error('\n先修好上面这些再构建。');
     process.exitCode = 1;
@@ -224,26 +356,106 @@ async function build({ write }) {
     builtAt: new Date().toISOString(),
     effects
   };
+  const libDoc = {
+    version: 1,
+    builtAt: doc.builtAt,
+    items: library
+  };
 
   if (write) {
     await writeFile(OUT_JSON, JSON.stringify(doc, null, 2) + '\n', 'utf8');
     await writeFile(OUT_JS,
       '/* 由 tools/lib.mjs 生成，别手改；改 effects/<id>/ 后跑 node tools/lib.mjs build */\n' +
       'window.SL_EFFECTS = ' + JSON.stringify(doc) + ';\n', 'utf8');
+    await mkdir(LIBRARY_DIR, { recursive: true });
+    await writeFile(OUT_LIB_JSON, JSON.stringify(libDoc, null, 2) + '\n', 'utf8');
+    await writeFile(OUT_LIB_JS,
+      '/* 由 tools/lib.mjs 生成，别手改；往 library/ 里加图后跑 node tools/lib.mjs build */\n' +
+      'window.SL_LIBRARY = ' + JSON.stringify(libDoc) + ';\n', 'utf8');
   }
 
   const total = effects.length;
   const passCount = effects.reduce((n, e) => n + e.passes.length, 0);
   const oneShot = effects.filter((e) => !e.loop).length;
-  console.log(`\n${write ? '✓ 已生成 effects/index.json + index.js' : '✓ 校验通过（未写入）'}`);
-  console.log(`  ${total} 个效果 · ${passCount} 个 Pass · ${oneShot} 个一次性效果`);
+  const anim = effects.filter((e) => Object.keys(e.tracks || {}).length).length;
+  console.log(`\n${write ? '✓ 已生成 effects/index.json + index.js、library/index.json + index.js' : '✓ 校验通过（未写入）'}`);
+  console.log(`  ${total} 个效果 · ${passCount} 个 Pass · ${oneShot} 个一次性 · ${anim} 个带关键帧`);
   for (const e of effects) {
     const tags = e.tags.length ? '  [' + e.tags.join(', ') + ']' : '';
     const dur = e.loop ? 'loop' : `${e.duration}s`;
     console.log(`  · ${e.id.padEnd(18)} ${e.name}  ${dur}  ${e.passes.length}p${tags}`);
   }
+  const kb = library.reduce((n, it) => n + it.bytes, 0);
+  console.log(`  ${library.length} 张图库素材 · ${(kb / 1024).toFixed(0)}KB`);
+  for (const it of library) {
+    console.log(`  · library/${it.id.padEnd(16)} ${it.name}  ${it.w}×${it.h}`);
+  }
   console.log('');
-  return doc;
+  return { doc, libDoc };
+}
+
+/** 把页面导出的效果包 JSON 落成目录 */
+async function importPack(file) {
+  if (!file) {
+    console.error('用法: node tools/lib.mjs import <效果包.json>');
+    process.exit(1);
+  }
+  const abs = path.resolve(process.cwd(), file);
+  let payload;
+  try {
+    payload = JSON.parse(await readFile(abs, 'utf8'));
+  } catch (e) {
+    console.error(`读不了 ${file}：${e.message}`);
+    process.exit(1);
+  }
+  const eff = payload && payload.effect;
+  if (!isObj(eff) || !eff.id || !Array.isArray(eff.passes) || !eff.passes.length) {
+    console.error('这个 JSON 不像效果包：需要 { effect: {...}, shaders: { "shaders/p1.frag": "..." } }');
+    process.exit(1);
+  }
+  if (!ID_RE.test(eff.id)) {
+    console.error(`效果 id 只能是 kebab-case：${eff.id}`);
+    process.exit(1);
+  }
+  const dir = path.join(EFFECTS_DIR, eff.id);
+  let exists = false;
+  try { await stat(dir); exists = true; } catch (_) { exists = false; }
+  if (exists) {
+    console.error(`effects/${eff.id}/ 已存在，换个 id 或先删掉旧目录`);
+    process.exit(1);
+  }
+  await mkdir(dir, { recursive: true });
+  const shaders = payload.shaders || {};
+  for (const file of Object.keys(shaders)) {
+    const out = path.join(dir, file);
+    await mkdir(path.dirname(out), { recursive: true });
+    await writeFile(out, String(shaders[file]), 'utf8');
+  }
+
+  // 内联的图片（页面里拖进来的贴图）落成 input/<slot>.png，json 里改成相对路径
+  let inlined = 0;
+  if (isObj(eff.inputs)) {
+    for (const slot of Object.keys(eff.inputs)) {
+      const def = eff.inputs[slot];
+      if (typeof def !== 'string' || !def.startsWith('data:')) continue;
+      const m = /^data:image\/([a-z]+);base64,(.+)$/i.exec(def);
+      if (!m) {
+        console.error(`inputs.${slot} 的图片格式不认识（只支持 png / jpeg / webp）`);
+        process.exit(1);
+      }
+      const ext = m[1].toLowerCase() === 'jpeg' ? 'jpg' : m[1].toLowerCase();
+      const rel = `input/${slot}.${ext}`;
+      const out = path.join(dir, rel);
+      await mkdir(path.dirname(out), { recursive: true });
+      await writeFile(out, Buffer.from(m[2], 'base64'));
+      eff.inputs[slot] = rel;
+      inlined += 1;
+    }
+  }
+
+  await writeFile(path.join(dir, 'effect.json'), JSON.stringify(eff, null, 2) + '\n', 'utf8');
+  console.log(`✓ 已生成 effects/${eff.id}/（${eff.passes.length} 个 Pass，${Object.keys(shaders).length} 个 shader${inlined ? `，${inlined} 张内联图落成文件` : ''}）`);
+  console.log('  接着跑：node tools/lib.mjs build');
 }
 
 const cmd = process.argv[2] || 'build';
@@ -252,7 +464,8 @@ else if (cmd === 'check') await build({ write: false });
 else if (cmd === 'list') {
   const doc = await build({ write: false });
   if (!doc) process.exit(1);
-} else {
-  console.error('用法: node tools/lib.mjs [build|check|list]');
+} else if (cmd === 'import') await importPack(process.argv[3]);
+else {
+  console.error('用法: node tools/lib.mjs [build|check|list|import <file>]');
   process.exit(1);
 }

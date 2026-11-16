@@ -121,10 +121,25 @@
           </div>
         </div>
 
-        <div class="scrub-row hidden" id="scrub-row">
-          <span class="scrub-label" id="scrub-name">时间轴</span>
-          <input id="scrub" class="scrub" type="range" min="0" max="1000" value="0" step="1" title="拖动查看任意时刻（一次性效果）">
-          <span class="scrub-time" id="scrub-time">0.00s</span>
+        <!-- 时间轴：拖游标看任意时刻；有 keyframe 的 uniform 会在下面长出一条轨道 -->
+        <div class="timeline" id="timeline">
+          <div class="tl-head">
+            <span class="tl-mode" id="tl-mode">无限时间</span>
+            <span class="tl-time" id="tl-time">0.00s</span>
+            <span class="tl-spacer"></span>
+            <button class="tool-btn" id="tl-key" title="在当前时刻给这个 Pass 的所有有 keyframe 的参数补一帧（K）">
+              <span id="tl-key-ic"></span><span>打帧</span>
+            </button>
+            <button class="tool-btn" id="tl-loop" title="循环播放（有长度时）">循环</button>
+            <button class="tool-btn" id="tl-fit" title="缩放到整段（所有关键帧都在视野内）">适应</button>
+            <button class="tool-btn" id="tl-collapse" title="收起 / 展开时间轴">收起</button>
+          </div>
+          <div class="tl-body" id="tl-body">
+            <div class="tl-ruler" id="tl-ruler"></div>
+            <div class="tl-lanes" id="tl-lanes"></div>
+            <div class="tl-playhead" id="tl-playhead"><span class="tl-knob"></span></div>
+            <div class="tl-empty" id="tl-empty">拖动游标预览时间；在右侧参数名后面点 ◇ 就能给这个参数打关键帧</div>
+          </div>
         </div>
 
         <div class="pane-bottom">
@@ -208,6 +223,7 @@
         <span class="lib-count" id="lib-count">0</span>
       </div>
       <div class="lib-tools">
+        <button class="btn tiny" id="btn-new-effect" title="新建一个效果包（背景 + 效果两个 Pass）">＋ 新建效果</button>
         <input id="lib-search" class="lib-search" type="search" placeholder="搜索效果 / 标签…" autocomplete="off">
         <button class="ibtn" id="lib-close" title="关闭（Esc）"></button>
       </div>
@@ -223,17 +239,18 @@
 <div id="modal-root"></div>
 <div id="ctxmenu" class="ctxmenu hidden"></div>
 
-<script src="js/util.js"></script>
-<script src="js/glsl.js"></script>
-<script src="js/assets.js"></script>
-<script src="js/engine.js"></script>
-<script src="js/editor.js"></script>
-<script src="js/uniforms.js"></script>
-<script src="js/pipeline.js"></script>
-<script src="js/presets.js"></script>
-<!-- 效果库：由 node tools/lib.mjs build 生成，没有这个文件时页面照常可用 -->
-<script src="effects/index.js"></script>
-<script src="js/store.js"></script>
-<script src="js/app.js"></script>
+<script src="js/util.js?v=15"></script>
+<script src="js/glsl.js?v=15"></script>
+<script src="js/assets.js?v=15"></script>
+<script src="js/engine.js?v=15"></script>
+<script src="js/editor.js?v=15"></script>
+<script src="js/uniforms.js?v=15"></script>
+<script src="js/pipeline.js?v=15"></script>
+<script src="js/presets.js?v=15"></script>
+<!-- 效果库 / 公共图库：由 node tools/lib.mjs build 生成，缺文件时页面照常可用 -->
+<script src="effects/index.js?v=15"></script>
+<script src="library/index.js?v=15"></script>
+<script src="js/store.js?v=15"></script>
+<script src="js/app.js?v=15"></script>
 </body>
 </html>

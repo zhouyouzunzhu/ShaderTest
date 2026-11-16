@@ -12,6 +12,18 @@ window.SL = window.SL || {};
   const SIZE = 512;
   const MAX_IMPORT = 2048;   // 导入图片的最大边长（超过会等比缩放）
 
+  /** 文件名 → 图库 id（规则必须和 tools/lib.mjs 的 kebab() 一致，否则效果包里引用的 library:<id> 会对不上） */
+  function libIdFromFile(name) {
+    const s = String(name || '').toLowerCase().replace(/\.[a-z0-9]+$/i, '')
+      .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60);
+    return s || 'item';
+  }
+
+  /** wood-1853403.jpg → wood 1853403 */
+  function prettyLibName(name) {
+    return String(name || '').replace(/\.[a-z0-9]+$/i, '').replace(/[_-]+/g, ' ').trim();
+  }
+
   /* ------------------------------ 程序化贴图 ------------------------------ */
   function newCanvas(w, h) {
     const c = document.createElement('canvas');
@@ -222,10 +234,37 @@ window.SL = window.SL || {};
     }
 
     /**
-     * 公共图库（library/index.js）：条目 id 稳定为 lib:<文件名>，图片异步解码，
+     * 公共图库：条目 id 稳定为 lib:<文件名 kebab>，图片异步解码，
      * 因此解码完要把 version 加一，让下一次 getTexture 重新上传。
+     *
+     * 有本地服务时直接读 library/ 里的真实文件（URL，不再走 base64）；
+     * 双击打开（file://）时退回 tools/lib.mjs build 出来的 window.SL_LIBRARY。
      */
     ensureLibrary(onLoaded) {
+      const self = this;
+      const done = function (entry) {
+        if (typeof onLoaded === 'function') onLoaded(entry);
+      };
+
+      if (window.SL.server && SL.server.on) {
+        return SL.server.listLibrary().then(function (items) {
+          const alive = {};
+          items.forEach(function (it) {
+            const libId = libIdFromFile(it.file);
+            const id = 'lib:' + libId;
+            alive[id] = true;
+            if (self.byId(id)) return;
+            self.addLibraryEntry(id, libId, prettyLibName(it.file), '/' + it.url, 0, 0, it.file, done);
+          });
+          // 磁盘上删掉的图，这里跟着下线
+          self.items.slice().forEach(function (e) {
+            if (e.kind === 'library' && !alive[e.id]) self.remove(e.id);
+          });
+        }).catch(function (e) {
+          if (window.SL.ui && SL.ui.toast) SL.ui.toast('读取 library/ 失败：' + e.message, 'warn');
+        });
+      }
+
       const lib = window.SL_LIBRARY;
       if (!lib || !Array.isArray(lib.items)) return;
       lib.items.forEach((item) => {
@@ -258,6 +297,38 @@ window.SL = window.SL || {};
         };
         img.src = item.dataURL;
       });
+    }
+
+    /** 建一条图库条目（服务模式与内联模式共用） */
+    addLibraryEntry(id, libId, name, src, w, h, note, done) {
+      const self = this;
+      const entry = {
+        id: id,
+        name: name || libId,
+        kind: 'library',
+        libId: libId,
+        image: null,
+        width: w || 0,
+        height: h || 0,
+        version: 0,
+        note: note || '',
+        params: { filter: 'linear', wrap: 'clamp' }
+      };
+      this.items.push(entry);
+      const img = new Image();
+      img.onload = function () {
+        entry.image = img;
+        entry.width = img.naturalWidth;
+        entry.height = img.naturalHeight;
+        entry.version = (entry.version || 0) + 1;
+        if (self.thumbs.has(id)) self.thumbs.delete(id);
+        if (typeof done === 'function') done(entry);
+      };
+      img.onerror = function () {
+        entry.error = true;
+      };
+      img.src = src;
+      return entry;
     }
 
     byId(id) {
@@ -409,6 +480,30 @@ window.SL = window.SL || {};
       });
     }
 
+    /** 用 URL 导入（服务模式下效果包里的 input/xxx.png 走这条，不进工程 base64） */
+    importURL(name, url) {
+      const self = this;
+      return new Promise(function (resolve, reject) {
+        const img = new Image();
+        img.onload = function () {
+          const entry = {
+            id: 'a:' + SL.uid('t'),
+            name: String(name || 'image').replace(/\.[a-z0-9]+$/i, ''),
+            kind: 'file',
+            image: img,
+            url: url,
+            width: img.naturalWidth,
+            height: img.naturalHeight,
+            params: { filter: 'linear', wrap: 'clamp' }
+          };
+          self.items.push(entry);
+          resolve(entry);
+        };
+        img.onerror = function () { reject(new Error('图片解码失败')); };
+        img.src = url;
+      });
+    }
+
     remove(id) {
       const gl = this.gl;
       const rec = this.textures.get(id);
@@ -437,6 +532,7 @@ window.SL = window.SL || {};
 
   SL.AssetStore = AssetStore;
   SL.ASSET_BUILTINS = BUILTINS;
+  SL.libIdFromFile = libIdFromFile;    // 和 tools/lib.mjs 的 kebab() 同一套规则
   SL.assetDefaults = {
     testcard: 'b:testcard',
     noise: 'b:noise',

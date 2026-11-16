@@ -89,10 +89,16 @@ window.SL = window.SL || {};
       } catch (e) { /* store 内部已提示 */ }
     }, 700);
 
-    // 先探本地服务：有的话 passes/ 与 project.json 都以磁盘为准
+    // 先探本地服务：有的话 passes/ library/ effects/ project.json 都以磁盘为准
     SL.server.init().then(function () {
       syncStoreMode();
-      return SL.passes.sync();
+      return Promise.all([SL.passes.sync(), reloadEffectIndex()]);
+    }).then(function () {
+      // 服务模式下 library/ 的真实内容要等探测完才读得到，这里补一次
+      return App.assets.ensureLibrary(function () {
+        App.needsRender = true;
+        if (App.doc && App.doc.ui.tab === 'textures') renderInspector();
+      });
     }).then(function () {
       return SL.store.load();
     }).then(function (doc) {
@@ -240,6 +246,35 @@ window.SL = window.SL || {};
       ? window.SL_EFFECTS.effects : [];
   }
 
+  /** 服务模式：把 /api/effects 的结果转成和 effects/index.js 一样的结构（shader 文本内联进 passes） */
+  function effectsFromServer(list) {
+    return (list || []).map(function (rec) {
+      const eff = rec.effect || {};
+      const shaders = rec.shaders || {};
+      const passes = (eff.passes || []).map(function (p) {
+        return Object.assign({}, p, { code: shaders[p.shader] || '' });
+      });
+      const assets = [];
+      Object.keys(eff.inputs || {}).forEach(function (slot) {
+        const v = String(eff.inputs[slot] || '');
+        if (v.indexOf('builtin:') === 0) assets.push({ slot: slot, kind: 'builtin', builtin: v.slice(8) });
+        else if (v.indexOf('library:') === 0) assets.push({ slot: slot, kind: 'library', libId: v.slice(8) });
+        else if (v.indexOf('data:') === 0) assets.push({ slot: slot, kind: 'file', name: slot, dataURL: v });
+        else assets.push({ slot: slot, kind: 'url', name: slot, url: 'effects/' + rec.id + '/' + v });
+      });
+      return Object.assign({}, eff, { id: rec.id, passes: passes, assets: assets });
+    });
+  }
+
+  /** 服务模式：重新扫一遍 effects/（新建效果写盘后调用，不用再跑 build） */
+  function reloadEffectIndex() {
+    if (!(window.SL.server && SL.server.on)) return Promise.resolve(false);
+    return SL.server.listEffects().then(function (list) {
+      window.SL_EFFECTS = { builtAt: Date.now(), effects: effectsFromServer(list) };
+      return true;
+    });
+  }
+
   /* ========================================================================
      二、文档
      ====================================================================== */
@@ -291,6 +326,7 @@ window.SL = window.SL || {};
     const doc = App.doc;
     const idx = window.SL_EFFECTS;
     if (!doc || !doc.effectId || !idx || !idx.builtAt) return;
+    if (window.SL.server && SL.server.on) return;   // 服务模式每次从磁盘现读，不存在「过期」
     if (!doc.effectBuiltAt || doc.effectBuiltAt === idx.builtAt) return;
     const id = doc.effectId;
     SL.ui.toast('「' + (updateDocBadgeName(id) || id) + '」在磁盘上更新过，当前显示的还是旧代码', 'info', {
@@ -1208,6 +1244,16 @@ window.SL = window.SL || {};
         if (App.assets.byId(id)) return Promise.resolve({ slot: a.slot, assetId: id });
         return Promise.resolve({ slot: a.slot, assetId: null });
       }
+      if (a.kind === 'url') {
+        // 服务模式：效果包目录里的 input/xxx.png，直接当 URL 载入
+        const existUrl = App.assets.items.filter(function (it) { return it.url === a.url; })[0];
+        if (existUrl) return Promise.resolve({ slot: a.slot, assetId: existUrl.id });
+        return App.assets.importURL(a.name, a.url).then(function (entry) {
+          return { slot: a.slot, assetId: entry.id };
+        }).catch(function () {
+          return { slot: a.slot, assetId: null };
+        });
+      }
       const exist = App.assets.items.filter(function (it) {
         return it.name === a.name && it.kind === 'file';
       })[0];
@@ -1555,35 +1601,60 @@ window.SL = window.SL || {};
 
   function offerEffectExport(id, name) {
     const body = SL.h('div', { style: 'display:grid;gap:10px;min-width:440px' });
-    body.appendChild(SL.h('p', {
-      style: 'margin:0;font-size:12.5px;color:var(--text-2);line-height:1.7',
-      html: '已经在编辑器里打开了。要让它进「效果库」，用下面任意一种方式落盘：'
-    }));
-    const download = SL.h('button', { class: 'btn primary', text: '下载效果包 JSON' });
+    const onDisk = !!(window.SL.server && SL.server.on);
+
+    if (onDisk) {
+      body.appendChild(SL.h('p', {
+        style: 'margin:0;font-size:12.5px;color:var(--text-2);line-height:1.7',
+        html: '当前连着本地服务，可以直接把这条管线写进 <code>effects/' + id + '/</code>：'
+      }));
+      const saveBtn = SL.h('button', { class: 'btn primary', text: '写入 effects/ 并刷新效果库' });
+      saveBtn.addEventListener('click', function () {
+        saveBtn.disabled = true;
+        const pack = effectPackFromDoc(id, name);
+        SL.server.putEffect(id, pack.effect, pack.shaders).then(function () {
+          return reloadEffectIndex();
+        }).then(function () {
+          SL.ui.toast('已写入 effects/' + id + '，效果库已更新', 'ok');
+          m.close();
+          if (typeof libraryOpen === 'function' && libraryOpen) renderLibrary();
+        }).catch(function (e) {
+          saveBtn.disabled = false;
+          SL.ui.toast('写入失败：' + e.message, 'bad');
+        });
+      });
+      body.appendChild(saveBtn);
+      body.appendChild(SL.h('div', {
+        class: 'insp-note', style: 'padding:0',
+        text: '写盘后缩略图会自动重渲，不用再跑 build（build 只给双击 index.html 的离线模式用）。'
+      }));
+    } else {
+      body.appendChild(SL.h('p', {
+        style: 'margin:0;font-size:12.5px;color:var(--text-2);line-height:1.7',
+        html: '已经在编辑器里打开了。要让它进「效果库」，用下面任意一种方式落盘：'
+      }));
+      const download = SL.h('button', { class: 'btn primary', text: '下载效果包 JSON' });
+      download.addEventListener('click', function () {
+        const pack = effectPackFromDoc(id, name);
+        SL.io.download(id + '.effect.json', JSON.stringify(pack, null, 2), 'application/json');
+        SL.ui.toast('已下载 ' + id + '.effect.json', 'ok');
+      });
+      body.appendChild(download);
+    }
+
     const cmd = 'node tools/lib.mjs import ' + id + '.effect.json';
     const codeEl = SL.h('code', {
       style: 'display:block;padding:8px 10px;background:var(--bg-code);border:1px solid var(--line);border-radius:6px;font-family:var(--mono);font-size:11.5px;color:var(--text-2);user-select:all',
       text: cmd
     });
     const copyBtn = SL.h('button', { class: 'btn tiny', text: '复制命令' });
-    const row = SL.h('div', { style: 'display:flex;gap:6px;align-items:center' }, download, copyBtn);
-    body.appendChild(row);
-    body.appendChild(SL.h('div', { class: 'insp-note', style: 'padding:0', text: '下载后在仓库根目录执行：' }));
+    body.appendChild(SL.h('div', { style: 'display:flex;gap:6px;align-items:center' }, copyBtn));
+    body.appendChild(SL.h('div', { class: 'insp-note', style: 'padding:0', text: '或者下载 JSON 后手动落盘（离线模式 / 别的机器）：' }));
     body.appendChild(codeEl);
-    body.appendChild(SL.h('div', {
-      class: 'insp-note',
-      style: 'padding:0',
-      text: '落盘后再跑 node tools/lib.mjs build，刷新页面就能在效果库里看到它。'
-    }));
-
-    download.addEventListener('click', function () {
-      const pack = effectPackFromDoc(id, name);
-      SL.io.download(id + '.effect.json', JSON.stringify(pack, null, 2), 'application/json');
-      SL.ui.toast('已下载 ' + id + '.effect.json', 'ok');
-    });
     copyBtn.addEventListener('click', function () {
       copyText(cmd);
     });
+
     const done = SL.h('button', { class: 'btn', text: '知道了' });
     const m = SL.ui.modal({ title: '保存这个效果', icon: 'download', body: body, footer: [SL.h('span', { class: 'grow' }), done] });
     done.addEventListener('click', m.close);
@@ -3031,7 +3102,9 @@ window.SL = window.SL || {};
     [{
       title: '公共图库',
       items: App.assets.items.filter(function (a) { return a.kind === 'library'; }),
-      note: '放在 library/ 里的公共素材（跑过 build 就有）。点缩略图直接当输入图。'
+      note: (window.SL.server && SL.server.on)
+        ? 'library/ 目录里的文件：拖图进来会自动写盘。点缩略图直接当输入图。'
+        : '放在 library/ 里的公共素材（跑过 node tools/lib.mjs build 才有）。点缩略图直接当输入图。'
     }, {
       title: '资源库',
       items: App.assets.items.filter(function (a) { return a.kind !== 'library'; }),
@@ -3085,15 +3158,26 @@ window.SL = window.SL || {};
     });
     if (entry.kind !== 'builtin') {
       wrap.appendChild(SL.h('div', { class: 'ctxmenu-sep' }));
-      const del = SL.h('div', { class: 'ctxmenu-item', style: 'color:#ff9caa', text: '删除这张贴图' });
+      const isLib = entry.kind === 'library';
+      const del = SL.h('div', { class: 'ctxmenu-item', style: 'color:#ff9caa', text: isLib ? '从 library/ 删掉这个文件' : '删除这张贴图' });
       del.addEventListener('click', function () {
         pop.close();
-        App.assets.remove(entry.id);
-        App.doc.assets = (App.doc.assets || []).filter(function (a) { return a.id !== entry.id; });
-        if (App.doc.source === entry.id) App.doc.source = SL.assetDefaults.testcard;
-        App.needsRender = true;
-        refresh();
-        setDirty();
+        const finish = function () {
+          App.assets.remove(entry.id);
+          App.doc.assets = (App.doc.assets || []).filter(function (a) { return a.id !== entry.id; });
+          if (App.doc.source === entry.id) App.doc.source = SL.assetDefaults.testcard;
+          App.needsRender = true;
+          refresh();
+          setDirty();
+        };
+        // 图库条目在服务模式下对应磁盘上的真实文件，先删文件
+        if (isLib && window.SL.server && SL.server.on && entry.note) {
+          SL.server.delLibrary(entry.note).then(finish).catch(function (e) {
+            SL.ui.toast('删除失败：' + e.message, 'bad');
+          });
+        } else {
+          finish();
+        }
       });
       wrap.appendChild(del);
     }
@@ -3111,6 +3195,25 @@ window.SL = window.SL || {};
     inp.click();
   }
 
+  /** 上传到 library/ 用的文件名：保留扩展名，其余字符收敛到 [a-z0-9._-] */
+  function safeLibName(file) {
+    const ext = ((file.name || '').match(/\.[a-z0-9]+$/i) || ['.png'])[0].toLowerCase();
+    const raw = String(file.name || 'image');
+    let base = raw.replace(/\.[a-z0-9]+$/i, '').toLowerCase()
+      .replace(/[^a-z0-9._-]+/g, '-').replace(/^[-.]+|[-.]+$/g, '')
+      .replace(/[-.]{2,}/g, '-').slice(0, 40);
+    // 纯中文名洗完之后几乎空了：用原名哈希兜底，避免都变成 1.png / 2.png
+    if (base.replace(/[^a-z0-9]/g, '').length < 2) {
+      let h = 2166136261;
+      for (let i = 0; i < raw.length; i++) {
+        h ^= raw.charCodeAt(i);
+        h = Math.imul(h, 16777619) >>> 0;
+      }
+      base = 'img-' + h.toString(36).slice(0, 5) + '-' + Date.now().toString(36).slice(-3);
+    }
+    return base + ext;
+  }
+
   function importFiles(files) {
     if (!files || !files.length) return;
     const imgs = files.filter(function (f) { return /^image\//.test(f.type); });
@@ -3118,6 +3221,31 @@ window.SL = window.SL || {};
       SL.ui.toast('只能导入图片文件', 'warn');
       return;
     }
+
+    // 服务模式：拖进来的图直接写进 library/，刷新后仍然是文件，不再是 base64
+    if (window.SL.server && SL.server.on) {
+      let names = [];
+      let chain = Promise.resolve();
+      imgs.forEach(function (f) {
+        const name = safeLibName(f);
+        names.push(name);
+        chain = chain.then(function () { return SL.server.uploadLibrary(name, f); });
+      });
+      chain.then(function () {
+        return App.assets.ensureLibrary(function () { App.needsRender = true; });
+      }).then(function () {
+        const libId = 'lib:' + SL.libIdFromFile(names[names.length - 1]);
+        if (App.assets.byId(libId)) App.doc.source = libId;
+        App.needsRender = true;
+        renderInspector();
+        setDirty();
+        SL.ui.toast('已写入 library/：' + names.join('、'), 'ok');
+      }).catch(function (err) {
+        SL.ui.toast('上传失败：' + (err && err.message ? err.message : err), 'bad');
+      });
+      return;
+    }
+
     let chain = Promise.resolve();
     imgs.forEach(function (f) {
       chain = chain.then(function () {

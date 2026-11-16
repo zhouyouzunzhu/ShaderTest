@@ -272,7 +272,8 @@ input,select,textarea{font-family:inherit;color:inherit;}
   border:0;background:transparent;color:var(--text-3);border-radius:5px;opacity:0;
   transition:opacity .1s,background .1s,color .1s;
 }
-.pass-item:hover .pass-eye,.pass-item.active .pass-eye{opacity:1;}
+.pass-item:hover .pass-eye,.pass-item.active .pass-eye,.pass-item.off .pass-eye{opacity:1;}
+.pass-item.off .pass-eye{color:var(--text-4);}
 .pass-eye:hover{background:var(--bg-4);color:var(--text);}
 .pass-eye.off{color:var(--text-4);}
 .pass-err{

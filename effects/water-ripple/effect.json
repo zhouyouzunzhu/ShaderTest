@@ -1,0 +1,23 @@
+{
+  "id": "water-ripple",
+  "name": "水流 · 扰动与反光",
+  "desc": "两层滚动噪声做 UV 扰动，再用噪声乘积提水面高光。适合验证「水流扰动」「液面折射」这类算法。",
+  "tags": ["水流", "循环", "扰动"],
+  "duration": 0,
+  "loop": true,
+  "output": { "w": 640, "h": 640, "alpha": false },
+  "inputs": {
+    "scene": "builtin:gradient",
+    "noise": "builtin:noise"
+  },
+  "passes": [
+    {
+      "name": "ripple",
+      "shader": "shaders/ripple.frag",
+      "bindings": {
+        "u_tex": { "kind": "asset", "input": "scene" },
+        "u_noise": { "kind": "asset", "input": "noise" }
+      }
+    }
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "id": "outline-flash",
+  "name": "描边 · 呼吸闪光",
+  "desc": "从贴图 alpha 上做边缘提取，再叠一层正弦呼吸的辉光。常用于「受击描边」「选中闪光」，可把 u_mode 改成 1 看反相描边。",
+  "tags": ["描边", "循环", "alpha", "发光"],
+  "duration": 0,
+  "loop": true,
+  "output": { "w": 512, "h": 512, "alpha": true },
+  "inputs": {
+    "sprite": "builtin:sprite"
+  },
+  "passes": [
+    {
+      "name": "outline",
+      "shader": "shaders/outline.frag",
+      "bindings": {
+        "u_sprite": { "kind": "asset", "input": "sprite" }
+      }
+    },
+    {
+      "name": "bloom",
+      "shader": "shaders/glow.frag",
+      "format": "hdr",
+      "bindings": {
+        "u_src": { "kind": "pass", "pass": "p1" }
+      }
+    }
+  ]
+}

@@ -151,6 +151,14 @@ window.SL = window.SL || {};
     if (saved) saved.innerHTML = SL.icon('check', 11);
     const cmp = $('#compare-ic');
     if (cmp) cmp.innerHTML = SL.icon('split', 12);
+    const libIc = $('#lib-btn-ic');
+    if (libIc) libIc.innerHTML = SL.icon('grid', 13);
+    const bgIc = $('#bg-ic');
+    if (bgIc) bgIc.innerHTML = SL.icon('image', 12);
+    const libIco = $('#lib-ico');
+    if (libIco) libIco.innerHTML = SL.icon('grid', 15);
+    const libClose = $('#lib-close');
+    if (libClose) libClose.innerHTML = SL.icon('x', 14);
   }
 
   /** 顶栏「已保存」闪一下，让自动保存可见 */
@@ -170,9 +178,27 @@ window.SL = window.SL || {};
   function fillPresetSelect() {
     const sel = $('#preset-select');
     sel.innerHTML = '';
+    const g1 = SL.h('optgroup', { label: '内置预设' });
     SL.presets.list.forEach(function (p) {
-      sel.appendChild(SL.h('option', { value: p.id, text: p.name, title: p.desc }));
+      g1.appendChild(SL.h('option', { value: p.id, text: p.name, title: p.desc }));
     });
+    sel.appendChild(g1);
+    const effects = libraryEffects();
+    if (effects.length) {
+      const g2 = SL.h('optgroup', { label: '效果库' });
+      effects.forEach(function (e) {
+        g2.appendChild(SL.h('option', { value: 'effect:' + e.id, text: e.name, title: e.desc }));
+      });
+      sel.appendChild(g2);
+    }
+    const cnt = $('#lib-btn-count');
+    if (cnt) cnt.textContent = effects.length ? String(effects.length) : '';
+  }
+
+  /** 效果库索引（effects/index.js 由 node tools/lib.mjs build 生成） */
+  function libraryEffects() {
+    return (window.SL_EFFECTS && Array.isArray(window.SL_EFFECTS.effects))
+      ? window.SL_EFFECTS.effects : [];
   }
 
   /* ========================================================================
@@ -207,6 +233,8 @@ window.SL = window.SL || {};
       }
       $('#preset-select').value = doc.presetId;
       $('#auto-toggle').checked = true;
+      applyPreviewBg();
+      syncScrub();
 
       selectPass(doc.selectedPassId, true);
       compileAll();
@@ -216,7 +244,26 @@ window.SL = window.SL || {};
       layoutZoom(true);
       App.needsRender = true;
       updateDocBadge();
+      announceEffectUpdate();
     });
+  }
+
+  // 重新 build 过效果库后，浏览器里恢复的旧代码不会自动更新——提示一下
+  function announceEffectUpdate() {
+    const doc = App.doc;
+    const idx = window.SL_EFFECTS;
+    if (!doc || !doc.effectId || !idx || !idx.builtAt) return;
+    if (!doc.effectBuiltAt || doc.effectBuiltAt === idx.builtAt) return;
+    const id = doc.effectId;
+    SL.ui.toast('「' + (updateDocBadgeName(id) || id) + '」在磁盘上更新过，当前显示的还是旧代码', 'info', {
+      label: '重新载入',
+      fn: function () { loadEffect(id, true); }
+    });
+  }
+
+  function updateDocBadgeName(id) {
+    const eff = libraryEffects().filter(function (e) { return e.id === id; })[0];
+    return eff ? eff.name : '';
   }
 
   function applyPanelSizes(ui) {
@@ -231,8 +278,11 @@ window.SL = window.SL || {};
 
   function updateDocBadge() {
     const sel = $('#preset-select');
+    const eff = App.doc.effectId
+      ? libraryEffects().filter(function (e) { return e.id === App.doc.effectId; })[0] : null;
     const p = SL.presets.list.filter(function (x) { return x.id === App.doc.presetId; })[0];
-    sel.title = (p ? p.name + ' · ' + p.desc : '') + (App.doc.custom ? '（已修改）' : '');
+    const title = eff ? (eff.name + ' · ' + (eff.desc || '')) : (p ? p.name + ' · ' + p.desc : '');
+    sel.title = title + (App.doc.custom ? '（已修改）' : '');
     $('#pipeline-meta').textContent = SL.pipeline.metaText(App.doc.passes);
   }
 
@@ -345,11 +395,27 @@ window.SL = window.SL || {};
     App.lastTs = ts;
     if (App.playing) {
       App.time += dt * App.speed;
+      const dur = durationOf();
+      // 一次性效果：走到末尾就停住，停在最后一帧而不是继续累加时间
+      if (dur > 0 && !App.doc.loop && App.time >= dur) {
+        App.time = dur;
+        App.playing = false;
+        App.doc.ui.playing = false;
+        syncPlayButton();
+        syncScrub();
+      }
       App.needsRender = true;
     }
     if (!App.needsRender) return;
     App.needsRender = false;
     renderFrame(dt);
+  }
+
+  /** 一次性效果的时长；0 表示无限循环 */
+  function durationOf() {
+    if (!App.doc) return 0;
+    const d = Number(App.doc.duration);
+    return isFinite(d) && d > 0 ? d : 0;
   }
 
   function dateVec() {
@@ -367,13 +433,20 @@ window.SL = window.SL || {};
 
   function renderFrame(dt) {
     const out = outputSize();
+    const dur = durationOf();
     const state = {
       output: out,
       passes: App.doc.passes,
       time: App.time,
       mouse: App.mouse,
       viewPassId: App.doc.viewPassId,
-      compare: App.compare
+      compare: App.compare,
+      // 一次性效果的时间轴：u_t01 是 0→1 的归一化进度
+      t01: dur > 0 ? SL.clamp(App.time / dur, 0, 1) : 0,
+      duration: dur,
+      playing: App.playing,
+      // 透明输出时把清屏 alpha 设为 0，预览背景才能透出来
+      clearAlpha: App.doc.alpha ? 0 : 1
     };
     const env = {
       source: sourceTex(),
@@ -395,6 +468,7 @@ window.SL = window.SL || {};
     updateStats(res.ms, res.gpu);
     updateTimeReadout();
     syncResolutionLabel(out);
+    if (dur > 0) syncScrub();
 
     // 逐 Pass 耗时：最多每 600ms 就地更新左栏标签（不重建列表，避免打断拖拽/改名）
     if (res.passMs) {
@@ -554,6 +628,11 @@ window.SL = window.SL || {};
   function togglePlay() {
     App.playing = !App.playing;
     App.doc.ui.playing = App.playing;
+    // 一次性效果播放到结尾再按播放，从头开始
+    if (App.playing) {
+      const dur = durationOf();
+      if (dur > 0 && !App.doc.loop && App.time >= dur - 1e-4) App.time = 0;
+    }
     syncPlayButton();
     App.needsRender = true;
     App.save && App.save();
@@ -586,6 +665,333 @@ window.SL = window.SL || {};
     App.frame = 0;
     App.needsRender = true;
     updateTimeReadout();
+    syncScrub();
+  }
+
+  /* ========================================================================
+     五之二、效果库：从 effects/ 的包加载到编辑器
+     ====================================================================== */
+  /** 把效果包解析成一份可用的文档（异步：文件型输入图要先注册成资源） */
+  function buildDocFromEffect(eff) {
+    const jobs = (eff.assets || []).map(function (a) {
+      if (a.kind === 'builtin') return Promise.resolve({ slot: a.slot, assetId: 'b:' + a.builtin });
+      const exist = App.assets.items.filter(function (it) {
+        return it.name === a.name && it.kind === 'file';
+      })[0];
+      if (exist) return Promise.resolve({ slot: a.slot, assetId: exist.id });
+      return App.assets.importDataURL(a.name, a.dataURL).then(function (entry) {
+        return { slot: a.slot, assetId: entry.id };
+      });
+    });
+
+    return Promise.all(jobs).then(function (pairs) {
+      const map = {};
+      pairs.forEach(function (x) { if (x && x.assetId) map[x.slot] = x.assetId; });
+
+      const passes = (eff.passes || []).map(function (p, i) {
+        const bindings = {};
+        Object.keys(p.bindings || {}).forEach(function (s) {
+          const b = p.bindings[s];
+          if (b.kind === 'asset') bindings[s] = { kind: 'asset', assetId: map[b.input] };
+          else if (b.kind === 'pass') bindings[s] = { kind: 'pass', passId: b.pass };
+          else bindings[s] = { kind: b.kind };
+        });
+        return {
+          id: p.id || ('p' + (i + 1)),
+          name: p.name || ('Pass ' + (i + 1)),
+          code: p.code,
+          enabled: true,
+          format: p.format === 'hdr' ? 'hdr' : 'rgba8',
+          scale: p.scale || 1,
+          filter: 'linear',
+          wrap: 'clamp',
+          bindings: bindings,
+          values: SL.deepClone(p.values || {})
+        };
+      });
+
+      return {
+        presetId: 'effect:' + eff.id,
+        effectId: eff.id,
+        effectBuiltAt: (window.SL_EFFECTS && window.SL_EFFECTS.builtAt) || null,
+        custom: false,
+        source: App.doc.source || 'b:testcard',
+        output: { w: eff.output.w, h: eff.output.h },
+        resMode: App.doc.resMode,
+        alpha: !!eff.output.alpha,
+        duration: eff.duration || 0,
+        loop: eff.loop !== false,
+        previewBg: App.doc.previewBg || 'checker',
+        passes: passes,
+        selectedPassId: passes[0] ? passes[0].id : null,
+        assets: SL.deepClone(App.doc.assets || []),
+        ui: SL.deepClone(App.doc.ui)
+      };
+    });
+  }
+
+  function loadEffect(id, skipConfirm) {
+    const eff = libraryEffects().filter(function (e) { return e.id === id; })[0];
+    if (!eff) {
+      SL.ui.toast('效果库里没有「' + id + '」，先跑 node tools/lib.mjs build', 'warn');
+      return Promise.resolve(false);
+    }
+    const ask = skipConfirm ? Promise.resolve(true) : confirmDiscard();
+    return ask.then(function (ok) {
+      if (!ok) {
+        $('#preset-select').value = App.doc.presetId;
+        return false;
+      }
+      return buildDocFromEffect(eff).then(function (doc) {
+        const next = SL.store.normalize(doc);
+        next.ui.playing = true;
+        next.ui.zoom = 1;
+        applyDoc(next);
+        App.time = 0;
+        App.frame = 0;
+        App.playing = true;
+        syncPlayButton();
+        updateTimeReadout();
+        syncScrub();
+        $('#preset-select').value = next.presetId;
+        const kb = eff.tags && eff.tags.length ? ' · ' + eff.tags.join(' / ') : '';
+        SL.ui.toast(eff.name + kb + (eff.desc ? '\n' + eff.desc : ''), 'info');
+        SL.store.save(next);
+        return true;
+      });
+    });
+  }
+
+  /* ---------------------------- 时间轴 ---------------------------- */
+  function syncScrub() {
+    const row = $('#scrub-row');
+    if (!row) return;
+    const dur = durationOf();
+    if (!(dur > 0)) { row.classList.add('hidden'); return; }
+    row.classList.remove('hidden');
+    const t = SL.clamp(App.time, 0, dur);
+    const el = $('#scrub');
+    if (el && document.activeElement !== el) el.value = String(Math.round((t / dur) * 1000));
+    $('#scrub-time').textContent = t.toFixed(2) + ' / ' + dur.toFixed(2) + 's';
+    const nm = $('#scrub-name');
+    if (nm) nm.textContent = App.playing ? '播放中' : '拖动查看';
+  }
+
+  /* ---------------------------- 预览背景 ---------------------------- */
+  const BG_MODES = ['checker', 'dark', 'light', 'source'];
+  const BG_LABEL = { checker: '棋盘', dark: '深色', light: '浅色', source: '输入图' };
+
+  function applyPreviewBg() {
+    const st = $('#preview-stage');
+    if (!st || !App.doc) return;
+    const mode = BG_MODES.indexOf(App.doc.previewBg) >= 0 ? App.doc.previewBg : 'checker';
+    st.classList.remove('bg-checker', 'bg-dark', 'bg-light', 'bg-source');
+    st.classList.add('bg-' + mode);
+    st.classList.toggle('alpha', !!App.doc.alpha);
+    if (mode === 'source') {
+      const entry = App.assets.byId(App.doc.source);
+      const url = entry ? App.assets.thumb(entry) : null;
+      st.style.backgroundImage = url ? 'url("' + url + '")' : '';
+    } else {
+      st.style.backgroundImage = '';
+    }
+    const btn = $('#btn-bg');
+    if (btn) {
+      btn.setAttribute('aria-pressed', App.doc.alpha ? 'true' : 'false');
+      btn.title = '预览背景：' + BG_LABEL[mode] + '（点一下切换；透明输出时才看得到）';
+    }
+    const lab = $('#bg-label');
+    if (lab) lab.textContent = BG_LABEL[mode];
+  }
+
+  function cyclePreviewBg() {
+    const cur = BG_MODES.indexOf(App.doc.previewBg) >= 0 ? App.doc.previewBg : 'checker';
+    App.doc.previewBg = BG_MODES[(BG_MODES.indexOf(cur) + 1) % BG_MODES.length];
+    applyPreviewBg();
+    if (!App.doc.alpha) SL.ui.toast('当前管线输出不透明，背景被盖住了；要验证 alpha 请载入带透明的效果，或在分辨率菜单里打开透明输出', 'warn');
+    setDirty();
+  }
+
+  /* ========================================================================
+     五之三、图库浮层：网格 + 标签筛选 + 实时缩略图
+     ====================================================================== */
+  const libTags = [];      // 已选标签（空 = 全部）
+  const libThumbs = {};    // effectId → dataURL
+  let libQuery = '';
+
+  function openLibrary() {
+    const root = $('#library');
+    if (!root) return;
+    if (!root.dataset.ready) {
+      const bd = SL.h('div', { class: 'lib-backdrop' });
+      bd.addEventListener('pointerdown', closeLibrary);
+      root.insertBefore(bd, root.firstChild);
+      root.dataset.ready = '1';
+    }
+    root.classList.remove('hidden');
+    renderLibrary();
+    buildLibraryThumbs();
+    const inp = $('#lib-search');
+    if (inp) {
+      inp.value = libQuery;
+      setTimeout(function () { inp.focus(); inp.select(); }, 30);
+    }
+  }
+
+  function closeLibrary() {
+    const root = $('#library');
+    if (root) root.classList.add('hidden');
+  }
+
+  function libraryOpen() {
+    const root = $('#library');
+    return !!root && !root.classList.contains('hidden');
+  }
+
+  function renderLibrary() {
+    const grid = $('#lib-grid');
+    if (!grid) return;
+    const effects = libraryEffects();
+
+    // 标签条
+    const tagBox = $('#lib-tags');
+    tagBox.innerHTML = '';
+    const tags = [];
+    effects.forEach(function (e) {
+      (e.tags || []).forEach(function (t) { if (tags.indexOf(t) < 0) tags.push(t); });
+    });
+    tags.sort(function (a, b) { return a.localeCompare(b, 'zh'); });
+    if (tags.length) {
+      const all = SL.h('button', { class: 'lib-tag' + (libTags.length ? '' : ' on'), type: 'button', text: '全部' });
+      all.addEventListener('click', function () { libTags.length = 0; renderLibrary(); });
+      tagBox.appendChild(all);
+      tags.forEach(function (t) {
+        const on = libTags.indexOf(t) >= 0;
+        const b = SL.h('button', { class: 'lib-tag' + (on ? ' on' : ''), type: 'button', text: t });
+        b.addEventListener('click', function () {
+          const i = libTags.indexOf(t);
+          if (i >= 0) libTags.splice(i, 1); else libTags.push(t);
+          renderLibrary();
+        });
+        tagBox.appendChild(b);
+      });
+    }
+
+    // 过滤
+    const q = libQuery.trim().toLowerCase();
+    const list = effects.filter(function (e) {
+      if (libTags.length && !(e.tags || []).some(function (t) { return libTags.indexOf(t) >= 0; })) return false;
+      if (!q) return true;
+      const hay = (e.id + ' ' + e.name + ' ' + (e.desc || '') + ' ' + (e.tags || []).join(' ')).toLowerCase();
+      return hay.indexOf(q) >= 0;
+    });
+
+    grid.innerHTML = '';
+    if (!effects.length) {
+      grid.appendChild(SL.h('div', {
+        class: 'lib-empty',
+        html: '效果库还是空的。<br>在 <code>effects/&lt;id&gt;/</code> 里放 <code>effect.json</code> + <code>shaders/*.frag</code>，' +
+          '然后跑 <code>node tools/lib.mjs build</code>，刷新页面就能看到。'
+      }));
+    } else if (!list.length) {
+      grid.appendChild(SL.h('div', { class: 'lib-empty', text: '没有匹配的效果，换个关键词或清掉标签过滤。' }));
+    } else {
+      list.forEach(function (e) { grid.appendChild(libCard(e)); });
+    }
+
+    $('#lib-count').textContent = list.length + (list.length !== effects.length ? ' / ' + effects.length : '');
+    const built = window.SL_EFFECTS && window.SL_EFFECTS.builtAt;
+    $('#lib-foot-right').textContent = built ? ('构建于 ' + new Date(built).toLocaleString()) : '';
+  }
+
+  function libCard(e) {
+    const active = App.doc && App.doc.effectId === e.id;
+    const card = SL.h('button', { class: 'lib-card' + (active ? ' on' : ''), type: 'button', 'data-id': e.id });
+    const thumb = SL.h('div', { class: 'lib-thumb' });
+    const url = libThumbs[e.id];
+    if (url) thumb.appendChild(SL.h('img', { src: url, alt: e.name }));
+    else thumb.appendChild(SL.h('span', { class: 'lib-thumb-empty', text: '渲染缩略图…' }));
+    const dur = e.loop ? '循环' : (e.duration || 0).toFixed(2) + 's';
+    thumb.appendChild(SL.h('span', { class: 'lib-badge', text: dur + (e.output && e.output.alpha ? ' · α' : '') }));
+    card.appendChild(thumb);
+
+    const meta = SL.h('div', { class: 'lib-meta' });
+    meta.appendChild(SL.h('div', { class: 'lib-name', text: e.name }));
+    if (e.desc) meta.appendChild(SL.h('div', { class: 'lib-desc', text: e.desc }));
+    const tg = SL.h('div', { class: 'lib-card-tags' });
+    (e.tags || []).slice(0, 4).forEach(function (t) { tg.appendChild(SL.h('span', { text: t })); });
+    meta.appendChild(tg);
+    card.appendChild(meta);
+    card.title = e.name + (e.desc ? '\n' + e.desc : '') + '\n\n单击载入这个效果';
+    card.addEventListener('click', function () {
+      closeLibrary();
+      loadEffect(e.id);
+    });
+    return card;
+  }
+
+  /** 给每张卡渲染一张实时缩略图（用主引擎离屏渲一帧，不落盘） */
+  function buildLibraryThumbs() {
+    const effects = libraryEffects();
+    const todo = effects.filter(function (e) { return !libThumbs[e.id]; });
+    let chain = Promise.resolve();
+    todo.forEach(function (eff) {
+      chain = chain.then(function () {
+        return buildDocFromEffect(eff).then(function (doc) {
+          const url = renderEffectThumb(doc);
+          if (url) {
+            libThumbs[eff.id] = url;
+            const card = document.querySelector('.lib-card[data-id="' + eff.id + '"] .lib-thumb');
+            if (card) {
+              card.innerHTML = '';
+              card.appendChild(SL.h('img', { src: url, alt: eff.name }));
+              const dur = eff.loop ? '循环' : (eff.duration || 0).toFixed(2) + 's';
+              card.appendChild(SL.h('span', { class: 'lib-badge', text: dur + (eff.output && eff.output.alpha ? ' · α' : '') }));
+            }
+          }
+        }).catch(function () { /* 单个效果渲染失败不影响其他 */ });
+      });
+    });
+    chain.then(function () { App.needsRender = true; });
+  }
+
+  function renderEffectThumb(doc) {
+    if (!App.engine.ok) return null;
+    const dur = doc.duration > 0 ? doc.duration : 0;
+    // 一次性效果取 70% 处的瞬间（此时拖尾最长，一眼能看出走向），循环效果取 1.35s
+    const t = dur > 0 && !doc.loop ? dur * 0.7 : 1.35;
+
+    // 缩略图不经过 compilePass，这里补一次参数默认值（否则 uniform 全是 0，画面是空的）
+    doc.passes.forEach(function (p) {
+      if (p.values && Object.keys(p.values).length) return;
+      const parsed = SL.glsl.parseUniforms(p.code || '');
+      SL.uniforms.init(p, parsed);
+    });
+    const state = {
+      output: { w: 176, h: 176 },
+      passes: doc.passes,
+      time: t,
+      mouse: [0, 0, 0, 0],
+      viewPassId: null,
+      compare: false,
+      t01: dur > 0 ? SL.clamp(t / dur, 0, 1) : 0,
+      duration: dur,
+      playing: false,
+      clearAlpha: doc.alpha ? 0 : 1
+    };
+    const entry = App.assets.byId(doc.source) || App.assets.items[0];
+    const env = {
+      source: entry ? App.assets.getTexture(entry) : null,
+      assets: App.assets.textureMap(),
+      delta: 0.016,
+      frame: 1,
+      date: dateVec()
+    };
+    try {
+      return App.engine.snapshot(state, env, 176);
+    } catch (e) {
+      return null;
+    }
   }
 
   /* ========================================================================
@@ -873,6 +1279,22 @@ window.SL = window.SL || {};
     const custom = SL.h('div', { class: 'ctxmenu-item', text: '自定义尺寸…' });
     custom.addEventListener('click', function () { close(); openCustomRes(); });
     wrap.appendChild(custom);
+
+    const sep2 = SL.h('div', { class: 'ctxmenu-sep' });
+    wrap.appendChild(sep2);
+    const alpha = SL.h('div', { class: 'ctxmenu-item row' },
+      SL.h('span', { class: 'lbl', text: '透明输出（alpha）' }),
+      SL.h('span', { class: 'key', text: App.doc.alpha ? '开' : '关' }));
+    alpha.title = '开启后画布按 alpha 合成，预览背景（棋格 / 深色 / 浅色 / 输入图）会透出来';
+    alpha.addEventListener('click', function () {
+      close();
+      App.doc.alpha = !App.doc.alpha;
+      applyPreviewBg();
+      App.needsRender = true;
+      setDirty();
+      SL.ui.toast(App.doc.alpha ? '已开启透明输出：用预览里的「背景」按钮检查 alpha' : '已关闭透明输出', 'info');
+    });
+    wrap.appendChild(alpha);
 
     const pop = SL.ui.popover(anchor, wrap, { align: 'left' });
     const close = pop.close;
@@ -1747,10 +2169,37 @@ window.SL = window.SL || {};
      十、顶栏动作
      ====================================================================== */
   function bindTopbar() {
-    $('#preset-select').addEventListener('change', function (e) { loadPreset(e.target.value); });
+    $('#preset-select').addEventListener('change', function (e) {
+      const v = e.target.value;
+      if (v.indexOf('effect:') === 0) loadEffect(v.slice(7));
+      else loadPreset(v);
+    });
     $('#btn-play').addEventListener('click', togglePlay);
     $('#btn-step').addEventListener('click', stepFrame);
     $('#btn-reset-time').addEventListener('click', resetTime);
+
+    $('#btn-library').addEventListener('click', openLibrary);
+    $('#lib-close').addEventListener('click', closeLibrary);
+    $('#lib-search').addEventListener('input', function (e) {
+      libQuery = e.target.value || '';
+      renderLibrary();
+    });
+    $('#btn-bg').addEventListener('click', cyclePreviewBg);
+
+    const scrub = $('#scrub');
+    if (scrub) {
+      scrub.addEventListener('input', function (e) {
+        const dur = durationOf();
+        if (!(dur > 0)) return;
+        App.playing = false;
+        App.doc.ui.playing = false;
+        syncPlayButton();
+        App.time = (Number(e.target.value) / 1000) * dur;
+        App.needsRender = true;
+        syncScrub();
+      });
+      scrub.addEventListener('change', function () { App.save && App.save(); });
+    }
 
     $('#btn-shot').addEventListener('click', function () {
       try {
@@ -1886,6 +2335,18 @@ window.SL = window.SL || {};
       if (mod && (e.key === 'k' || e.key === 'K' || e.key === 'p' || e.key === 'P')) {
         e.preventDefault();
         openCmdk();
+        return;
+      }
+      // 效果库
+      if (mod && (e.key === 'l' || e.key === 'L')) {
+        e.preventDefault();
+        if (libraryOpen()) closeLibrary(); else openLibrary();
+        return;
+      }
+      // 效果库里 Esc 先关浮层，别被专注模式抢走
+      if (e.key === 'Escape' && libraryOpen()) {
+        e.preventDefault();
+        closeLibrary();
         return;
       }
       // 全局：编译 / 导出 / 字号 / 跳行
@@ -2081,6 +2542,8 @@ window.SL = window.SL || {};
       out.push({ group: group, label: label, hint: hint || '', icon: icon || 'bolt', run: run, desc: desc || '' });
     };
 
+    add('操作', '打开效果库', 'Ctrl+L', 'grid', openLibrary);
+    add('操作', '切换预览背景', '', 'image', cyclePreviewBg);
     add('操作', '播放 / 暂停', 'Space', 'play', togglePlay);
     add('操作', '单步前进', '→', 'step', function () { stepFrame(1); });
     add('操作', '单步后退', '←', 'step', function () { stepFrame(-1); });
@@ -2127,6 +2590,12 @@ window.SL = window.SL || {};
         sel.value = p.id;
         sel.dispatchEvent(new Event('change', { bubbles: true }));
       }, p.desc || '');
+    });
+
+    libraryEffects().forEach(function (e) {
+      add('效果库', e.name, e.loop ? '循环' : ((e.duration || 0).toFixed(2) + 's'), 'bolt', function () {
+        loadEffect(e.id);
+      }, e.desc || '');
     });
 
     (App.doc ? App.doc.passes : []).forEach(function (p, i) {
@@ -2288,8 +2757,10 @@ window.SL = window.SL || {};
       '<tr><td><code>u_aspect</code></td><td>宽高比</td></tr>',
       '<tr><td><code>u_mouse</code> / <code>iMouse</code></td><td>vec4：xy 当前坐标（像素、左下原点），zw 按下位置</td></tr>',
       '<tr><td><code>u_date</code></td><td>vec4：年、月、日、秒</td></tr>',
+      '<tr><td><code>u_t01</code> / <code>u_duration</code> / <code>u_playing</code></td><td>一次性效果的时间轴：0→1 进度 / 时长 / 是否在播</td></tr>',
       '<tr><td><code>PI</code> <code>TAU</code></td><td>常量</td></tr>',
       '<tr><td><code>sl_luma()</code> <code>sl_rotate()</code> <code>sl_hash21()</code></td><td>常用函数</td></tr>',
+      '<tr><td><code>sl_easeInOut()</code> <code>sl_easeOut()</code> <code>sl_easeIn()</code> <code>sl_pulse()</code></td><td>缓动与脉冲</td></tr>',
       '</table>',
       '<p class="tip">写 <code>#version 300 es</code>、声明 <code>in vec2 vUv</code>/<code>out vec4</code> 都可以省略，构建器会补；' +
       '旧写法 <code>varying</code>、<code>texture2D</code>、<code>gl_FragColor</code> 会被自动改写。</p>',
@@ -2305,9 +2776,19 @@ window.SL = window.SL || {};
       '<li><b>指定 Pass / 源图</b>：跨 Pass 取结果（bloom 合成就是这么做的）。</li>',
       '</ul>',
       '<p>再声明一个 <code>uniform vec2 u_texSize;</code> 就能自动拿到所绑定纹理的尺寸。</p>',
+      '<h3>效果库（effects/）</h3>',
+      '<p>顶栏「效果库」或 <kbd>Ctrl</kbd>+<kbd>L</kbd> 打开。每个效果是一个目录：</p>',
+      '<pre class="codeblock">effects/slash-arc/\n  effect.json      # 名称 / 标签 / 时长 / 是否循环 / 输出尺寸与 alpha\n  shaders/*.frag   # 每个 Pass 一个文件\n  input/*.png      # 可选：这个效果要用的贴图</pre>',
+      '<p>加完效果跑一次 <code>node tools/lib.mjs build</code>（会校验并生成 <code>effects/index.js</code>），刷新页面即可在图库看到；' +
+      '想从头写一个新效果用 <code>node tools/new.mjs 新效果id</code>。</p>',
+      '<h3>一次性效果与透明输出</h3>',
+      '<p>效果包里写 <code>"loop": false</code> + <code>"duration"</code> 时，预览下方会出现时间轴，拖到任意时刻定格；' +
+      'shader 里用 <code>u_t01</code>（0→1）驱动扫光进度，别再用 u_time 取模。</p>',
+      '<p><code>"output": { "alpha": true }</code> 表示输出带透明通道，预览会叠在背景上（棋盘格 / 深色 / 浅色 / 输入图，用预览右上角的「背景」按钮切）。</p>',
       '<h3>快捷键</h3>',
       '<table class="keys-grid">',
-      '<tr><td><kbd>Ctrl</kbd>+<kbd>K</kbd></td><td>命令面板：搜命令 / 预设 / Pass / 贴图</td></tr>',
+      '<tr><td><kbd>Ctrl</kbd>+<kbd>K</kbd></td><td>命令面板：搜命令 / 预设 / 效果 / Pass / 贴图</td></tr>',
+      '<tr><td><kbd>Ctrl</kbd>+<kbd>L</kbd></td><td>打开 / 关闭效果库</td></tr>',
       '<tr><td><kbd>Space</kbd></td><td>播放 / 暂停</td></tr>',
       '<tr><td><kbd>→</kbd> <kbd>←</kbd></td><td>单帧前进 / 后退</td></tr>',
       '<tr><td><kbd>R</kbd></td><td>时间归零</td></tr>',
@@ -2375,7 +2856,20 @@ window.SL = window.SL || {};
       });
     },
     state: function () { return App; },
-    pixel: function (x, y) { return App.engine.readPixel(x, y); }
+    pixel: function (x, y) { return App.engine.readPixel(x, y); },
+    // 效果库：给自动化 / AI 用的入口
+    effects: function () { return libraryEffects(); },
+    effectDoc: function (id) {
+      const eff = libraryEffects().filter(function (e) { return e.id === id; })[0];
+      if (!eff) return Promise.resolve(null);
+      return buildDocFromEffect(eff).then(function (doc) { return SL.store.normalize(doc); });
+    },
+    loadEffect: loadEffect,
+    thumb: function (id) {
+      return SL.test.effectDoc(id).then(function (doc) {
+        return doc ? renderEffectThumb(doc) : null;
+      });
+    }
   };
 
   window.SL.app = App;

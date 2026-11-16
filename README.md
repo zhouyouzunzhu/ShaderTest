@@ -17,6 +17,7 @@
 3. 下方编辑器改 shader，停手 0.4 秒自动编译（或 `Ctrl + Enter` 立即编译）。
 4. 右侧「Uniforms」拖滑块、「纹理」换输入图、左侧「新增 Pass」挂后处理。
 5. 忘了命令在哪就按 `Ctrl + K`：命令面板能搜命令、预设、Pass、贴图。
+6. 想看已经攒下来的效果，按 `Ctrl + L` 打开效果库。
 
 工程会自动保存到浏览器 IndexedDB，刷新/重开自动恢复；换机器用顶栏的「保存工程 / 打开工程」导出导入 JSON。
 
@@ -33,6 +34,32 @@
 | 右栏 Inspector | Uniforms：参数控件 + 筛选框 + 随机 / 复位 + 采样器绑定；纹理：输入图与资源库；信息：当前 Pass 参数、管线链、显存估算、设备能力 |
 
 三栏之间的分隔条都可拖拽调宽窄（宽度会随工程保存）。
+
+---
+
+## 效果库
+
+`effects/` 目录下的每个文件夹就是一个效果，按 `Ctrl + L` 或顶栏「效果库」打开图库：网格卡片、标签筛选、搜索，卡片缩略图是真实渲染出来的（带透明的地方显示棋盘格）。
+
+![效果库](docs/library.png)
+
+```
+effects/
+  slash-arc/
+    effect.json          # id / 名字 / 标签 / 时长 / 循环 / 输出尺寸与 alpha
+    shaders/sweep.frag   # 每个 Pass 一个文件，可读可 diff
+    input/…              # 可选：这个效果要用的贴图
+  index.json             # 构建产物：给工具和 AI 读
+  index.js               # 构建产物：给页面读（file:// 下用 <script> 载入）
+```
+
+- **加效果**：`node tools/new.mjs my-effect --name "我的效果" --tags 刀光,一次性 --duration 0.6 --alpha`，改完 `.frag` 跑一次 `node tools/lib.mjs build`，刷新页面就有。
+- **校验**：`node tools/lib.mjs check` 会查 id 与目录名一致、Pass 指向的 shader 存在、绑定目标存在、时长与尺寸合法；不合格直接失败，不会写坏索引。
+- **贴图随效果走**：`inputs` 里可以写 `builtin:noise` 这种内置图，也可以写 `input/mask.png`，构建时内联成 dataURL，效果目录自包含。
+- **一次性效果**（`loop: false` + `duration`）：预览下方出现时间轴，拖动即可 scrub 到任意进度，播放到末尾自动停；shader 里用 `u_t01`（0→1）驱动，别用 `u_time` 取模。
+- **透明效果**（`output.alpha: true`）：预览右上角「棋盘」可切换背景（棋盘 / 深色 / 浅色 / 输入图），用来检查 alpha 与叠加观感。
+
+字段、绑定写法与常见坑见 [`docs/EFFECT_FORMAT.md`](docs/EFFECT_FORMAT.md)。
 
 ---
 
@@ -66,6 +93,9 @@ void main() {
 | `u_aspect` | float | 宽高比 |
 | `u_mouse` | vec4 | xy = 光标（左下原点，0..1），zw = 按下位置 |
 | `u_date` | vec4 | 年、月、日、秒 |
+| `u_t01` | float | 一次性效果的进度 0→1（循环效果恒为 0） |
+| `u_duration` | float | 效果的总时长（秒），没有则为 0 |
+| `u_playing` | float | 是否在播放（1 / 0） |
 
 `u_resolution` 是**当前 Pass** 的尺寸（`1/2×` 倍率的 Pass 会相应变小），`vUv` 恒为 0..1 且左下角是 (0,0)。
 
@@ -151,7 +181,20 @@ uniform sampler2D u_tex;   // @label 输入图
 | 自反馈残影 | 上一帧衰减叠加，演示反馈缓冲 |
 | 等离子生成 | 纯数学生成，不依赖输入 |
 
-切换预设时，如果当前工程是改过的（`自定义`），会先确认再覆盖。
+切换预设时，如果当前工程是改过的（`自定义`），会先确认再覆盖。内置预设下面是「效果库」分组，列出 `effects/` 里的全部效果。
+
+---
+
+## 效果库里的效果
+
+| 效果 | 说明 |
+| --- | --- |
+| 刀光·弧形横扫 | 一次性：角度扫过，头部亮线 + 身后拖尾，带 alpha，可叠在武器上 |
+| 道具·斜向刷光 | 一次性：一条斜向光带掠过贴图，只在不透明像素上出现（用贴图 alpha 遮罩） |
+| 描边·呼吸闪光 | 从贴图 alpha 提边（Sobel）+ 外发光，亮度随时间呼吸，适合「可交互物件」高亮 |
+| 水流·扰动与反光 | 两层滚动噪声推 UV + 乘积高光，适合验证「水面/热浪」类算法 |
+
+写自己的效果时，先 `node tools/new.mjs` 生成骨架，再照着 `docs/EFFECT_FORMAT.md` 改。
 
 ---
 
@@ -171,6 +214,7 @@ uniform sampler2D u_tex;   // @label 输入图
 | 按键 | 作用 |
 | --- | --- |
 | `Ctrl + K` / `Ctrl + P` | 命令面板 |
+| `Ctrl + L` | 效果库 |
 | `Space` | 播放 / 暂停 |
 | `→` / `←` | 单帧前进 / 后退 |
 | `R` | 时间归零 |
@@ -211,8 +255,17 @@ shaderTest/
 │   ├── pipeline.js     左栏 Pass 列表（选中 / 改名 / 拖拽 / 启用停用 / 右键菜单）
 │   ├── presets.js      10 套示例管线
 │   ├── store.js        自动保存（IndexedDB → localStorage）、工程导入导出
-│   └── app.js          装配：渲染循环、预览交互、编译调度、检查器、快捷键
-└── docs/screenshot.png
+│   └── app.js          装配：渲染循环、预览交互、编译调度、检查器、快捷键、图库
+├── effects/            效果库（每个子目录一个效果包）
+│   ├── <id>/effect.json + shaders/*.frag + input/
+│   ├── index.json      构建产物（工具 / AI 读）
+│   └── index.js        构建产物（页面读，file:// 下走 <script>）
+├── tools/
+│   ├── lib.mjs         扫描 / 校验 / 生成索引（build / check / list）
+│   └── new.mjs         新建效果脚手架
+├── docs/
+│   ├── EFFECT_FORMAT.md 效果包格式与写作约定
+│   └── screenshot.png
 ```
 
 ---
@@ -225,6 +278,9 @@ shaderTest/
 SL.test.checkAll();            // 遍历全部预设，返回每个 Pass 的编译结果
 SL.test.loadPreset('bloom');   // 装载某个预设
 SL.test.pixel(360, 240);       // 读预览中心像素 [r,g,b,a]（0..1）
+SL.test.effects();             // 效果库索引里的全部 id
+SL.test.loadEffect('slash-arc');   // 装载某个效果
+await SL.test.thumb('slash-arc');  // 渲染一张该效果的缩略图 dataURL
 ```
 
 ---
@@ -238,4 +294,5 @@ SL.test.pixel(360, 240);       // 读预览中心像素 [r,g,b,a]（0..1）
 - 单 Pass 单输出，未暴露 MRT（多渲染目标）；需要多路输出就拆成多个 Pass。
 - 采样器数量受设备限制（常见 16 个），每个 Pass 自己算。
 - Shadertoy 兼容层里 `iChannelTime` 恒为 0（没有接播放器/视频解码）；`iChannelResolution` 有按绑定纹理填。
+- 图库缩略图是打开图库时用 176×176 现渲的（4 个效果约 0.3 秒），效果多了以后会换成构建期预生成。
 - 浏览器实测：Chromium 内核（Chrome / Edge）+ WebGL2 正常；Safari / 移动端未验证。

@@ -78,6 +78,11 @@ window.SL = window.SL || {};
       source: p.source || SL.assetDefaults.testcard,
       output: { w: p.output.w, h: p.output.h },
       resMode: 'fit',
+      effectId: null,
+      alpha: false,
+      duration: 0,
+      loop: true,
+      previewBg: 'checker',
       passes: p.passes,
       selectedPassId: p.passes[0] ? p.passes[0].id : null,
       viewPassId: null,
@@ -95,6 +100,19 @@ window.SL = window.SL || {};
     };
   }
 
+  /** 效果库里有哪些 id（index.js 由 tools/lib.mjs 生成，缺失时视作空库） */
+  function effectIds() {
+    const list = (window.SL_EFFECTS && window.SL_EFFECTS.effects) || [];
+    return list.map(function (e) { return e.id; });
+  }
+
+  /** presetId 既可以是内置预设 id，也可以是 'effect:<id>' */
+  function knownPreset(id) {
+    if (typeof id !== 'string') return false;
+    if (SL.presets.has(id)) return true;
+    return id.indexOf('effect:') === 0 && effectIds().indexOf(id.slice(7)) >= 0;
+  }
+
   /* ------------------------------ 规范化 ------------------------------ */
   function clampInt(v, def, min, max) {
     if (v === null || v === undefined || v === '') return def;
@@ -109,15 +127,26 @@ window.SL = window.SL || {};
 
   /** 把任意来源的文档修成可用的形状；非法数据尽量修复而不是整份丢弃 */
   function normalize(input, opts) {
+    opts = opts || {};
     const out = {};
     const base = defaultState();
     const src = input && typeof input === 'object' ? input : {};
 
     out.v = 1;
-    out.presetId = typeof src.presetId === 'string' && SL.presets.has(src.presetId) ? src.presetId : base.presetId;
+    out.presetId = knownPreset(src.presetId) ? src.presetId : base.presetId;
+    out.effectId = out.presetId.indexOf('effect:') === 0 ? out.presetId.slice(7) : null;
+    out.effectBuiltAt = out.effectId && typeof src.effectBuiltAt === 'string' ? src.effectBuiltAt : null;
     out.custom = !!src.custom;
 
     out.source = typeof src.source === 'string' ? src.source : base.source;
+
+    out.alpha = !!src.alpha;
+    out.duration = (function () {
+      const d = Number(src.duration);
+      return isFinite(d) && d > 0 ? Math.min(3600, d) : 0;
+    })();
+    out.loop = src.loop !== false;
+    out.previewBg = ['checker', 'dark', 'light', 'source'].indexOf(src.previewBg) >= 0 ? src.previewBg : 'checker';
 
     const w = clampInt(src.output && src.output.w, base.output.w, 16, MAX_EDGE);
     const h = clampInt(src.output && src.output.h, base.output.h, 16, MAX_EDGE);
@@ -176,7 +205,7 @@ window.SL = window.SL || {};
       });
     }
     if (!passes.length && !opts.allowEmpty) {
-      const p = SL.presets.get(out.presetId);
+      const p = SL.presets.get(out.presetId) || SL.presets.get(base.presetId);
       passes = p.passes;
       out.source = p.source || base.source;
       out.output = { w: p.output.w, h: p.output.h };

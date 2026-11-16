@@ -29,7 +29,7 @@ window.SL = window.SL || {};
     'out vec4 oColor;',
     'void main(){',
     '  vec4 c = texture(u_tex, vUv);',
-    '  oColor = vec4(c.rgb, 1.0);',
+    '  oColor = vec4(c.rgb, clamp(c.a, 0.0, 1.0));',
     '}'
   ].join('\n');
 
@@ -48,6 +48,11 @@ window.SL = window.SL || {};
       case 'iMouse': return [ctx.mouse[0], ctx.mouse[1], ctx.mouse[2], ctx.mouse[3]];
       case 'u_date': case 'iDate': return [ctx.date[0], ctx.date[1], ctx.date[2], ctx.date[3]];
       case 'iSampleRate': return [ctx.sampleRate || 44100];
+      // 一次性效果的时间轴：u_t01 是 0→1 的归一化进度，u_playing 表示是否在播
+      case 'u_t01': return [ctx.t01 == null ? 0 : ctx.t01];
+      case 'u_progress': return [ctx.t01 == null ? 0 : ctx.t01];
+      case 'u_duration': return [ctx.duration == null ? 0 : ctx.duration];
+      case 'u_playing': return [ctx.playing ? 1 : 0];
       default: return null;
     }
   }
@@ -73,7 +78,7 @@ window.SL = window.SL || {};
     init() {
       const canvas = this.canvas;
       const attrs = {
-        alpha: false,
+        alpha: true,
         antialias: false,
         depth: false,
         stencil: false,
@@ -421,12 +426,15 @@ window.SL = window.SL || {};
       }
       this.frame++;
 
+      // 输出带 alpha 的效果时，清屏 alpha 用 0，让画布透明处能透出预览背景
+      const clearA = state.clearAlpha == null ? 1 : state.clearAlpha;
+
       // 对比模式：跳过整条管线，直接把原始输入贴到画布，
       // 用来一眼判断「算法到底改了什么」。
       if (state.compare) {
         gl.bindFramebuffer(gl.FRAMEBUFFER, null);
         gl.viewport(0, 0, W, H);
-        gl.clearColor(0, 0, 0, 1);
+        gl.clearColor(0, 0, 0, clearA);
         gl.clear(gl.COLOR_BUFFER_BIT);
         if (env.source) {
           gl.useProgram(this.blitProg);
@@ -509,7 +517,7 @@ window.SL = window.SL || {};
 
         gl.bindFramebuffer(gl.FRAMEBUFFER, dst.fbo);
         gl.viewport(0, 0, pw, ph);
-        gl.clearColor(0, 0, 0, 1);
+        gl.clearColor(0, 0, 0, clearA);
         gl.clear(gl.COLOR_BUFFER_BIT);
         gl.useProgram(entry.program);
         gl.bindVertexArray(this.vao);
@@ -523,6 +531,7 @@ window.SL = window.SL || {};
         const date = env.date || [1970, 0, 1, 0];
         const ctx = {
           time: state.time, delta: env.delta || 0, frame: env.frame || 0,
+          t01: state.t01, duration: state.duration, playing: state.playing,
           w: pw, h: ph,
           mouse: this.scaleMouse(state.mouse, W, H, pw, ph),
           date: date,
@@ -557,7 +566,7 @@ window.SL = window.SL || {};
       }
       gl.bindFramebuffer(gl.FRAMEBUFFER, null);
       gl.viewport(0, 0, W, H);
-      gl.clearColor(0, 0, 0, 1);
+      gl.clearColor(0, 0, 0, clearA);
       gl.clear(gl.COLOR_BUFFER_BIT);
       if (finalTex) {
         gl.useProgram(this.blitProg);
@@ -652,6 +661,38 @@ window.SL = window.SL || {};
       }
       ctx.putImageData(img, 0, 0);
       return c.toDataURL('image/png');
+    }
+
+    /**
+     * 用当前管线渲染一张方形缩略图并返回 dataURL。
+     * 图库页用它做实时预览：临时把画布尺寸改成 size，读完立刻还原。
+     */
+    snapshot(state, env, size) {
+      if (!this.ok) return null;
+      const oldW = this.canvas.width, oldH = this.canvas.height;
+      const st = Object.assign({}, state, {
+        output: { w: size, h: size },
+        viewPassId: null,
+        compare: false
+      });
+      this.render(st, env);
+      const W = this.canvas.width, H = this.canvas.height;
+      const gl = this.gl;
+      const buf = new Uint8Array(W * H * 4);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      gl.readPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+      const c = document.createElement('canvas');
+      c.width = W; c.height = H;
+      const g2 = c.getContext('2d');
+      const img = g2.createImageData(W, H);
+      for (let y = 0; y < H; y++) {
+        const src = (H - 1 - y) * W * 4;
+        img.data.set(buf.subarray(src, src + W * 4), y * W * 4);
+      }
+      g2.putImageData(img, 0, 0);
+      const url = c.toDataURL('image/png');
+      this.canvas.width = oldW; this.canvas.height = oldH;
+      return url;
     }
   }
 

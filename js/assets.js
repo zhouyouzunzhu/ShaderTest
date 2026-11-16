@@ -163,12 +163,36 @@ window.SL = window.SL || {};
     return c;
   }
 
+  /** 带透明通道的道具图：菱形主体 + 内圈亮环，用来验证 alpha 合成与描边 */
+  function drawSprite() {
+    const S = SIZE, c = newCanvas(S, S), g = c.getContext('2d');
+    const img = g.createImageData(S, S);
+    for (let y = 0; y < S; y++) {
+      for (let x = 0; x < S; x++) {
+        const u = (x + 0.5) / S * 2 - 1, v = (y + 0.5) / S * 2 - 1;
+        const d = Math.abs(u) + Math.abs(v);                        // 菱形距离场（|u|+|v| = 常数 的等值线是菱形）
+        const body = SL.clamp((0.68 - d) / 0.02, 0, 1);             // 主体：留在画面内，四周留白
+        const ring = Math.exp(-Math.pow((d - 0.52) / 0.02, 2));     // 内圈亮环
+        const core = SL.clamp(1 - d / 0.5, 0, 1);
+        const i = (y * S + x) * 4;
+        const k = Math.min(1, core * 0.5 + ring * 0.9);
+        img.data[i] = Math.round(255 * k);
+        img.data[i + 1] = Math.round(232 * k);
+        img.data[i + 2] = Math.round(196 * k);
+        img.data[i + 3] = Math.round(255 * body);
+      }
+    }
+    g.putImageData(img, 0, 0);
+    return c;
+  }
+
   const BUILTINS = [
     { id: 'testcard', name: '测试卡', draw: drawTestcard, note: '色条 / 灰阶 / 网格' },
     { id: 'checker', name: '棋盘', draw: drawChecker, note: '32px 方格' },
     { id: 'noise', name: '分形噪声', draw: drawNoise, note: '5 层 value noise' },
     { id: 'gradient', name: '色相渐变', draw: drawGradient, note: '斜向色相' },
-    { id: 'circle', name: '圆形衰减', draw: drawCircle, note: '中心亮，边缘黑' }
+    { id: 'circle', name: '圆形衰减', draw: drawCircle, note: '中心亮，边缘黑' },
+    { id: 'sprite', name: '徽记（透明底）', draw: drawSprite, note: '菱形 / 软边 / 带 alpha' }
   ];
 
   const builtinCache = {};

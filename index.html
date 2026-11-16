@@ -32,7 +32,11 @@
     </div>
 
     <div class="tb-center">
-      <label class="preset-field" title="切换内置示例管线">
+      <button class="lib-btn" id="btn-library" title="打开效果库（Ctrl+L）">
+        <span id="lib-btn-ic"></span><span>效果库</span><span class="lib-btn-count" id="lib-btn-count"></span>
+      </button>
+      <div class="tb-sep"></div>
+      <label class="preset-field" title="切换内置示例管线 / 效果">
         <span class="preset-cap">预设</span>
         <select id="preset-select"></select>
       </label>
@@ -107,11 +111,20 @@
           </div>
           <div class="chip-group">
             <span class="chip static dim" id="preview-note">滚轮缩放 · 中键平移 · 双击适应</span>
+            <button class="chip toggle" id="btn-bg" aria-pressed="false" title="预览背景：棋盘格 / 深色 / 浅色 / 输入图（透明输出时才有意义）">
+              <span id="bg-ic"></span><span id="bg-label">棋盘</span>
+            </button>
             <button class="chip toggle" id="btn-compare" aria-pressed="false" title="对比原始输入图（B，或按住 \）">
               <span id="compare-ic"></span><span>原图</span>
             </button>
             <button class="chip toggle" id="btn-zen" aria-pressed="false" title="专注模式：只留预览（Z）">专注</button>
           </div>
+        </div>
+
+        <div class="scrub-row hidden" id="scrub-row">
+          <span class="scrub-label" id="scrub-name">时间轴</span>
+          <input id="scrub" class="scrub" type="range" min="0" max="1000" value="0" step="1" title="拖动查看任意时刻（一次性效果）">
+          <span class="scrub-time" id="scrub-time">0.00s</span>
         </div>
 
         <div class="pane-bottom">
@@ -185,6 +198,28 @@
 </div>
 
 <div id="toast-wrap"></div>
+
+<div id="library" class="library hidden" role="dialog" aria-modal="true" aria-label="效果库">
+  <div class="lib-sheet">
+    <header class="lib-head">
+      <div class="lib-title">
+        <span class="lib-ico" id="lib-ico"></span>
+        <b>效果库</b>
+        <span class="lib-count" id="lib-count">0</span>
+      </div>
+      <div class="lib-tools">
+        <input id="lib-search" class="lib-search" type="search" placeholder="搜索效果 / 标签…" autocomplete="off">
+        <button class="ibtn" id="lib-close" title="关闭（Esc）"></button>
+      </div>
+    </header>
+    <div class="lib-tags" id="lib-tags"></div>
+    <div class="lib-grid" id="lib-grid"></div>
+    <footer class="lib-foot">
+      <span id="lib-hint">每个效果是 effects/&lt;id&gt;/ 里的一个包；加完效果跑一次 node tools/lib.mjs build</span>
+      <span class="lib-foot-right" id="lib-foot-right"></span>
+    </footer>
+  </div>
+</div>
 <div id="modal-root"></div>
 <div id="ctxmenu" class="ctxmenu hidden"></div>
 
@@ -196,6 +231,8 @@
 <script src="js/uniforms.js"></script>
 <script src="js/pipeline.js"></script>
 <script src="js/presets.js"></script>
+<!-- 效果库：由 node tools/lib.mjs build 生成，没有这个文件时页面照常可用 -->
+<script src="effects/index.js"></script>
 <script src="js/store.js"></script>
 <script src="js/app.js"></script>
 </body>

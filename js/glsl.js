@@ -48,7 +48,10 @@ window.SL = window.SL || {};
     u_texel: 'vec2',
     u_aspect: 'float',
     u_mouse: 'vec4',
-    u_date: 'vec4'
+    u_date: 'vec4',
+    u_t01: 'float',
+    u_duration: 'float',
+    u_playing: 'float'
   };
 
   /** Shadertoy 兼容名 */
@@ -76,6 +79,10 @@ window.SL = window.SL || {};
     'mat2 sl_rotate(float a){ float c = cos(a), s = sin(a); return mat2(c, -s, s, c); }',
     'float sl_luma(vec3 c){ return dot(c, vec3(0.2126, 0.7152, 0.0722)); }',
     'float sl_hash21(vec2 p){ p = fract(p * vec2(123.34, 456.21)); p += dot(p, p + 45.32); return fract(p.x * p.y); }',
+    'float sl_easeInOut(float t){ return t * t * (3.0 - 2.0 * t); }',
+    'float sl_easeOut(float t){ return 1.0 - pow(1.0 - clamp(t, 0.0, 1.0), 3.0); }',
+    'float sl_easeIn(float t){ return pow(clamp(t, 0.0, 1.0), 3.0); }',
+    'float sl_pulse(float t, float peak){ float d = (t - peak) / 0.18; return exp(-d * d); }',
     '#endif'
   ];
 

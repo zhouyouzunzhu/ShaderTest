@@ -1,0 +1,21 @@
+{
+  "id": "item-shine",
+  "name": "道具 · 斜向刷光",
+  "desc": "一次性刷光：一条斜向光带扫过道具，只落在不透明像素上（用贴图 alpha 当遮罩），可直接叠在底图上看效果。",
+  "tags": ["刷光", "一次性", "alpha", "道具"],
+  "duration": 0.9,
+  "loop": false,
+  "output": { "w": 512, "h": 512, "alpha": true },
+  "inputs": {
+    "sprite": "builtin:sprite"
+  },
+  "passes": [
+    {
+      "name": "shine",
+      "shader": "shaders/shine.frag",
+      "bindings": {
+        "u_sprite": { "kind": "asset", "input": "sprite" }
+      }
+    }
+  ]
+}

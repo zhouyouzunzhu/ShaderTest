@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>ShaderLab · GLSL 着色器测试台</title>
+<link rel="stylesheet" href="css/styles.css" />
+</head>
+<body>
+<div id="app">
+
+  <!-- ── 顶栏 ─────────────────────────────────────────────── -->
+  <header id="topbar">
+    <div class="brand">
+      <span class="brand-mark">
+        <svg viewBox="0 0 32 32" width="26" height="26" aria-hidden="true">
+          <defs>
+            <linearGradient id="bm" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0" stop-color="#8b7cff"/><stop offset="1" stop-color="#2ee6c5"/>
+            </linearGradient>
+          </defs>
+          <rect x="1" y="1" width="30" height="30" rx="9" fill="url(#bm)" opacity="0.18"/>
+          <rect x="1" y="1" width="30" height="30" rx="9" fill="none" stroke="url(#bm)" stroke-width="1.2" opacity="0.9"/>
+          <path d="M6 20c3.2 0 3.2-8 6.4-8s3.2 8 6.4 8 3.2-8 6.4-8" fill="none" stroke="url(#bm)" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+      </span>
+      <span class="brand-name">Shader<b>Lab</b></span>
+      <span class="brand-sub">GLSL 测试台</span>
+    </div>
+
+    <div class="tb-center">
+      <label class="preset-field" title="切换内置示例管线">
+        <span class="preset-cap">预设</span>
+        <select id="preset-select"></select>
+      </label>
+      <div class="tb-sep"></div>
+      <div class="transport">
+        <button class="ibtn" id="btn-play" title="播放 / 暂停 (Space)"></button>
+        <button class="ibtn" id="btn-step" title="暂停时单帧步进 (→)"></button>
+        <button class="ibtn" id="btn-reset-time" title="时间归零 (R)"></button>
+        <span class="time-chip" id="time-readout" title="u_time 当前值">0.00s</span>
+      </div>
+    </div>
+
+    <div class="tb-right">
+      <span class="stat-chip" id="stat-fps">-- fps</span>
+      <span class="stat-chip dim" id="stat-ms">-- ms</span>
+      <div class="tb-sep"></div>
+      <button class="ibtn" id="btn-shot" title="截取当前画面为 PNG"></button>
+      <button class="ibtn" id="btn-save" title="导出工程 JSON"></button>
+      <button class="ibtn" id="btn-open" title="打开工程 JSON"></button>
+      <input type="file" id="file-open" accept=".json,application/json" hidden />
+      <button class="ibtn" id="btn-help" title="帮助 / 快捷键"></button>
+    </div>
+  </header>
+
+  <!-- ── 工作区 ───────────────────────────────────────────── -->
+  <main id="workspace">
+
+    <!-- 左：管线 -->
+    <aside id="left" class="panel">
+      <div class="panel-head">
+        <span class="panel-title">PIPELINE</span>
+        <span class="panel-count" id="pass-count">0</span>
+        <span class="grow"></span>
+        <button class="ibtn sm" id="btn-add-pass" title="新增 Pass"></button>
+      </div>
+      <div class="panel-scroll" id="pass-scroll">
+        <ol id="pass-list" class="pass-list"></ol>
+        <button class="add-pass" id="btn-add-pass-2">
+          <span class="plus">+</span><span>新增 Pass</span>
+        </button>
+        <div class="pipeline-tip">
+          点击 Pass 编辑 · 拖拽调序 · <kbd>Ctrl</kbd>+<kbd>↵</kbd> 编译
+        </div>
+      </div>
+      <div class="panel-foot">
+        <span id="pipeline-meta">—</span>
+      </div>
+    </aside>
+
+    <div class="splitter v" id="split-left" title="拖动调整宽度"></div>
+
+    <!-- 中：预览 + 编辑器 -->
+    <section id="center">
+
+      <div id="preview-pane">
+        <div id="preview-scroll">
+          <div id="preview-stage">
+            <canvas id="gl"></canvas>
+          </div>
+        </div>
+
+        <div class="pane-top">
+          <div class="chip-group">
+            <button class="chip" id="res-btn" title="输出分辨率 / 格式">
+              <span id="res-label">—</span>
+            </button>
+            <span class="chip static" id="fmt-badge">RGBA8</span>
+            <span class="chip static accent hidden" id="view-badge">查看中间 Pass</span>
+          </div>
+          <div class="chip-group">
+            <span class="chip static dim" id="preview-note">滚轮缩放 · 中键平移</span>
+          </div>
+        </div>
+
+        <div class="pane-bottom">
+          <div class="chip-group">
+            <button class="ibtn sm" id="zoom-out" title="缩小"></button>
+            <span class="zoom-label" id="zoom-readout">100%</span>
+            <button class="ibtn sm" id="zoom-in" title="放大"></button>
+            <button class="btn tiny" id="zoom-fit">适应</button>
+            <button class="btn tiny" id="zoom-100">1:1</button>
+          </div>
+          <div class="readout" id="hover-readout">—</div>
+        </div>
+
+        <div id="gl-fallback" class="hidden"></div>
+      </div>
+
+      <div class="splitter h" id="split-editor" title="拖动调整编辑器高度"></div>
+
+      <div id="editor-pane">
+        <div id="editor-head">
+          <div class="eh-left">
+            <span class="dot" id="compile-dot"></span>
+            <span id="editor-title" class="eh-title">Pass</span>
+            <span class="eh-sub" id="editor-sub"></span>
+          </div>
+          <div class="eh-right">
+            <button class="btn tiny" id="btn-snippets" title="插入常用 GLSL 片段">片段</button>
+            <label class="switch-label" title="停止输入后自动重新编译">
+              <input type="checkbox" id="auto-toggle" checked />
+              <span class="sw"></span><span>自动编译</span>
+            </label>
+            <button class="btn tiny primary" id="btn-compile" title="立即编译 (Ctrl/Cmd + Enter)">编译</button>
+          </div>
+        </div>
+        <div id="editor-body">
+          <div id="gutter" class="gutter"></div>
+          <div id="code-wrap">
+            <pre id="highlight" class="code-layer" aria-hidden="true"></pre>
+            <div id="err-layer" class="code-layer"><div id="err-rows"></div></div>
+            <textarea id="code" class="code-layer" spellcheck="false" autocomplete="off" autocapitalize="off" wrap="off" aria-label="GLSL 源码"></textarea>
+          </div>
+        </div>
+        <div id="editor-status">
+          <span class="pill" id="compile-pill">未编译</span>
+          <div id="err-list"></div>
+        </div>
+      </div>
+
+    </section>
+
+    <div class="splitter v" id="split-right" title="拖动调整宽度"></div>
+
+    <!-- 右：检查器 -->
+    <aside id="right" class="panel">
+      <div class="panel-head tabs" id="inspector-tabs">
+        <button class="tab active" data-tab="uniforms">Uniforms<span class="tab-badge" id="uni-count"></span></button>
+        <button class="tab" data-tab="textures">纹理</button>
+        <button class="tab" data-tab="info">信息</button>
+      </div>
+      <div class="panel-scroll" id="inspector-body"></div>
+    </aside>
+
+  </main>
+</div>
+
+<div id="toast-wrap"></div>
+<div id="modal-root"></div>
+<div id="ctxmenu" class="ctxmenu hidden"></div>
+
+<script src="js/util.js"></script>
+<script src="js/glsl.js"></script>
+<script src="js/assets.js"></script>
+<script src="js/engine.js"></script>
+<script src="js/editor.js"></script>
+<script src="js/uniforms.js"></script>
+<script src="js/pipeline.js"></script>
+<script src="js/presets.js"></script>
+<script src="js/store.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>

@@ -56,7 +56,7 @@ window.SL = window.SL || {};
      ====================================================================== */
   function init() {
     decorateIcons();
-    fillPresetSelect();
+    syncEffectCount();
 
     App.engine = new SL.Engine($('#gl'));
     if (!App.engine.ok) {
@@ -100,7 +100,7 @@ window.SL = window.SL || {};
         if (App.doc && App.doc.ui.tab === 'textures') renderInspector();
       });
     }).then(function () {
-      fillPresetSelect();      // 效果数量以磁盘为准（服务模式下可能比 index.js 新）
+      syncEffectCount();      // 效果数量以磁盘为准（服务模式下可能比 index.js 新）
       return SL.store.load();
     }).then(function (doc) {
       App.__fresh = !doc;
@@ -147,8 +147,8 @@ window.SL = window.SL || {};
 
     if (kinds.effects) {
       reloadEffectIndex().then(function () {
-        fillPresetSelect();
-        if (typeof libraryOpen === 'function' && libraryOpen) {
+        syncEffectCount();
+        if (libraryOpen()) {
           renderLibrary();
           buildLibraryThumbs();
         }
@@ -240,7 +240,7 @@ window.SL = window.SL || {};
     }, 1400);
   }
 
-  function fillPresetSelect() {
+  function syncEffectCount() {
     const effects = libraryEffects();
     const cnt = $('#lib-btn-count');
     if (cnt) cnt.textContent = effects.length ? String(effects.length) : '';
@@ -1660,8 +1660,8 @@ window.SL = window.SL || {};
         }).then(function () {
           SL.ui.toast('已写入 effects/' + id + '，效果库已更新', 'ok');
           m.close();
-          fillPresetSelect();
-          if (typeof libraryOpen === 'function' && libraryOpen) {
+          syncEffectCount();
+          if (libraryOpen()) {
             renderLibrary();
             buildLibraryThumbs();
           }
@@ -2562,7 +2562,6 @@ window.SL = window.SL || {};
       const next = arr[Math.min(i, arr.length - 1)];
       App.doc.selectedPassId = next ? next.id : null;
     }
-    if (App.doc.viewPassId === pass.id) App.doc.viewPassId = null;
     if (App.viewPin === pass.id) App.viewPin = null;
     compileAll();
     selectPass(App.doc.selectedPassId, true);
@@ -3787,7 +3786,7 @@ window.SL = window.SL || {};
     });
     add('操作', App.compare ? '关闭原图对比' : '对比原图', 'B', 'split', function () { setCompare(!App.compare); });
     add('操作', App.zen ? '退出专注模式' : '进入专注模式', 'Z', 'zen', function () { setZen(!App.zen); });
-    add('操作', '插入常见 Pass…', 'N', 'sliders', openPassPicker, '调色 / 模糊 / 提取 / 合成 / 风格化 / 扭曲');
+    add('操作', '插入常见 Pass…', 'N', 'sliders', openPassPicker, '生成 / 调色 / 颜色 / 模糊 / 边缘 / 扭曲 / 故障…');
     add('操作', '新增空白 Pass', 'Shift+N', 'plus', insertBlankPass);
     add('操作', '重置为默认管线', '', 'reset', resetPipeline, '清空后只留一个基础调色 Pass');
     add('操作', '重新编译当前 Pass', 'Ctrl+↵', 'bolt', compileNow);
@@ -4044,10 +4043,10 @@ window.SL = window.SL || {};
       '创建后到时间轴上直接改（0 = 无限时间）再打关键帧。' +
       '做完点「导出效果包 JSON」下载，然后 <code>node tools/lib.mjs import 文件名.effect.json</code> + <code>build</code> 就进库了。</p>',
       '<h3>常见 Pass</h3>',
-      '<p>按 <kbd>N</kbd>（或左栏「插入 Pass」）打开选择器，顶部芯片可以按分组过滤：生成 / 调色 / 模糊 / 提取 / 合成 / 风格化 / 扭曲。' +
-      '一个模板就是一个 Pass，插进来之后就是普通 Pass，代码、参数、绑定都能改。</p>',
-      '<p><b>叠加态</b>（调色 / 模糊 / 扭曲…）读上一 Pass 的输出再输出；' +
-      '<b>中间态</b>（柏林噪声 / FBM / 沃罗诺伊 / 渐变…）不读输入、自己生成一张图，插到管线最前面但不参与主链——' +
+      '<p>按 <kbd>N</kbd>（或左栏「插入 Pass」）打开选择器，顶部芯片可以按分组过滤：生成 / 调色 / 颜色 / 模糊 / 提取 / 边缘 / 合成 / 风格化 / 图案 / 扭曲 / 故障，目前 75 个模板。' +
+      '一个模板就是一个 Pass、只做一件事，插进来之后就是普通 Pass，代码、参数、绑定都能改，靠拼管线出复杂效果。</p>',
+      '<p><b>叠加态</b>（调色 / 颜色 / 模糊 / 边缘 / 扭曲 / 图案 / 故障…）读上一 Pass 的输出再输出；' +
+      '<b>中间态</b>（21 个「生成」分组：噪声 / FBM / 沃罗诺伊 / 渐变 / 火焰 / 闪电 / 焦散…）不读输入、自己生成一张图，插到管线最前面但不参与主链——' +
       '在别的 Pass 的采样器里选「指定 Pass」指到它，才能拿来当噪声、遮罩或位移图。</p>',
       '<h3>播放与时长</h3>',
       '<p>播放 / 单帧 / 单帧后退 / 归零都在时间轴左边；「时长」输入框直接改这个管线的时长：' +

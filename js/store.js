@@ -86,7 +86,6 @@ window.SL = window.SL || {};
       previewBg: 'checker',
       passes: doc.passes,
       selectedPassId: doc.passes[0] ? doc.passes[0].id : null,
-      viewPassId: null,
       assets: [],
       ui: {
         playing: true,
@@ -223,7 +222,6 @@ window.SL = window.SL || {};
 
     const ids = passes.map(function (p) { return p.id; });
     out.selectedPassId = ids.indexOf(src.selectedPassId) >= 0 ? src.selectedPassId : (ids[0] || null);
-    out.viewPassId = ids.indexOf(src.viewPassId) >= 0 ? src.viewPassId : null;
 
     /* 用户资源 */
     out.assets = [];

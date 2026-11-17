@@ -1280,5 +1280,131 @@ ${body}
       '  vec3 c = a * 0.75 + ramp * t * u_amount;')
   );
 
+  /* ───────────── 粒子类 ─────────────
+     没有顶点缓冲 / compute / 多渲染目标，所以粒子是「每像素解析求值」：
+     每颗粒子的出生相位、方向、速度都由 hash 决定，位置用解析运动方程算出来
+     （p = p0 + v·t + ½g·t²），再按距离累加光斑。全部只读 u_time，无状态。 */
+  function particleEntry(id, name, desc, d, extra) {
+    const o = Object.assign({
+      count: 24, life: 1.8, speed: 0.35, gravity: -0.25, spread: 0.05,
+      swirl: 0, sway: 0, size: 0.022, soft: 0.6,
+      color: '1 0.85 0.55', fade: 0.8, glow: 1.0, streak: 0
+    }, d || {});
+    const extraUniforms = (extra && extra.uniforms) || '';
+    const extraBody = (extra && extra.body) || '';
+    return {
+      id: id, name: name, group: '生成', role: 'source', desc: desc,
+      code: `
+uniform float u_count;    // @range 4 64 @step 1 @default ${o.count} @label 粒子数
+uniform float u_life;     // @range 0.4 6 @step 0.05 @default ${o.life} @label 寿命(秒)
+uniform float u_speed;    // @range 0 1.2 @step 0.01 @default ${o.speed} @label 初速
+uniform float u_gravity;  // @range -1.5 1.5 @step 0.01 @default ${o.gravity} @label 重力
+uniform float u_spread;   // @range 0 0.8 @step 0.01 @default ${o.spread} @label 出生散布
+uniform float u_swirl;    // @range 0 2 @step 0.01 @default ${o.swirl} @label 旋涡
+uniform float u_sway;     // @range 0 0.12 @step 0.001 @default ${o.sway} @label 横向摇摆
+uniform float u_size;     // @range 0.004 0.09 @step 0.001 @default ${o.size} @label 粒子大小
+uniform float u_soft;     // @range 0 1 @step 0.01 @default ${o.soft} @label 柔和
+uniform float u_fade;     // @range 0 1 @step 0.01 @default ${o.fade} @label 淡出
+uniform float u_glow;     // @range 0 3 @step 0.01 @default ${o.glow} @label 亮度
+uniform vec3  u_color;    // @color @default ${o.color} @label 颜色
+${extraUniforms}
+void main() {
+  float aspect = u_resolution.x / max(1.0, u_resolution.y);
+  vec2 p = vec2(vUv.x * aspect, vUv.y);
+  vec3 col = vec3(0.0);
+  float life = max(0.15, u_life);
+
+  for (int i = 0; i < 64; i++) {
+    if (float(i) >= u_count) break;
+    float fi = float(i);
+
+    // 每颗粒子错开出生：age 在 0..1 之间循环
+    float phase = sl_hash21(vec2(fi, 1.7));
+    float age = fract(u_time / life + phase);
+
+    // 出生点与初速
+    float ang = sl_hash21(vec2(fi, 9.1)) * 6.2831853;
+    vec2 dir = vec2(cos(ang), sin(ang));
+    vec2 p0 = vec2(0.5) + (vec2(sl_hash21(vec2(fi, 3.3)), sl_hash21(vec2(fi, 5.5))) - 0.5) * u_spread * 2.0;
+    float spd = u_speed * (0.45 + sl_hash21(vec2(fi, 7.7)) * 1.1);
+    vec2 pos = p0 + dir * spd * (age * life);
+    pos.y += 0.5 * u_gravity * (age * life) * (age * life);
+
+    // 旋涡：绕画面中心转
+    vec2 rel = pos - vec2(0.5);
+    float sa = u_swirl * age;
+    float cs = cos(sa);
+    float sn = sin(sa);
+    pos = vec2(0.5) + vec2(rel.x * cs - rel.y * sn, rel.x * sn + rel.y * cs);
+
+    // 横向摇摆
+    pos.x += sin(u_time * 1.3 + fi * 2.0) * u_sway;
+
+    // 大小与光斑
+    float sz = u_size * (0.55 + sl_hash21(vec2(fi, 11.3)) * 0.9);
+    float d = length(p - pos);
+    float core = smoothstep(sz, sz * 0.12, d);
+    float halo = smoothstep(sz * (1.0 + u_soft * 4.0), 0.0, d) * 0.3 * u_soft;
+    float twinkle = 0.7 + 0.3 * sin(u_time * 7.0 + fi * 2.3);
+    float fade = clamp(1.0 - age * u_fade, 0.0, 1.0);
+${extraBody}
+    col += u_color * (core + halo) * fade * twinkle * u_glow;
+  }
+
+  fragColor = vec4(col, 1.0);
+}
+`
+    };
+  }
+
+  T.push(
+    particleEntry('gen-particles', '通用粒子', '可调的粒子场：数量 / 寿命 / 初速 / 重力 / 旋涡 / 摇摆 / 大小全在参数里，其它粒子模板都是它的预设', {}),
+
+    particleEntry('gen-spark-burst', '火花迸发', '从中心炸开的火星，带重力下落与快速淡出；适合打击 / 爆炸的底料', {
+      count: 44, life: 1.1, speed: 0.42, gravity: -0.55, spread: 0.02,
+      size: 0.017, soft: 0.5, color: '1 0.72 0.35', fade: 0.9, glow: 1.8
+    }),
+
+    particleEntry('gen-fireflies', '萤火虫', '缓慢漂浮的暖绿光点，带随机闪烁与绕圈；夜景 / 森林氛围', {
+      count: 26, life: 4.5, speed: 0.09, gravity: 0.0, spread: 0.45,
+      swirl: 0.6, size: 0.018, soft: 0.9, color: '0.85 1 0.45', fade: 0.35, glow: 1.3
+    }),
+
+    particleEntry('gen-snow', '飘雪', '自上而下缓慢飘落的雪点，横向正弦摇摆，落地前淡出', {
+      count: 52, life: 6.0, speed: 0.12, gravity: -0.05, spread: 0.55,
+      sway: 0.035, size: 0.011, soft: 0.7, color: '0.95 0.98 1', fade: 0.25, glow: 1.0
+    }, {
+      body: '    // 雪从上方落下：把出生点抬到画面上方\n    pos.y += 0.35;'
+    }),
+
+    particleEntry('gen-embers', '余烬上升', '向上飘的火星，带旋涡与随机闪烁；火焰 / 篝火的余烬层', {
+      count: 34, life: 2.6, speed: 0.16, gravity: 0.22, spread: 0.12,
+      swirl: 0.35, sway: 0.02, size: 0.009, soft: 0.5, color: '1 0.55 0.18', fade: 0.55, glow: 1.9
+    }),
+
+    particleEntry('gen-dust', '浮尘光斑', '大而软、慢慢移动的光斑，像镜头里的浮尘 / 光晕颗粒', {
+      count: 18, life: 7.0, speed: 0.05, gravity: 0.0, spread: 0.6,
+      swirl: 0.15, size: 0.05, soft: 1.0, color: '1 0.95 0.8', fade: 0.15, glow: 0.45
+    }),
+
+    particleEntry('gen-meteors', '流星', '沿固定方向拖尾的粒子：用方向拉伸的距离场做出速度感', {
+      count: 14, life: 1.6, speed: 0.7, gravity: -0.15, spread: 0.5,
+      size: 0.014, soft: 0.4, color: '0.75 0.9 1', fade: 0.6, glow: 1.4
+    }, {
+      uniforms: 'uniform float u_stretch;  // @range 0 8 @step 0.1 @default 3.5 @label 拖尾长度\n',
+      body: `    // 拖尾：沿运动方向拉长距离场
+    vec2 vel = dir * spd + vec2(0.0, u_gravity * age * life);
+    vec2 dv = p - pos;
+    vec2 tangent = normalize(vel + vec2(1e-4));
+    float along = dot(dv, tangent);
+    float across = length(dv - tangent * along);
+    float tail = u_stretch * sz * 3.0;
+    float shape = smoothstep(sz, sz * 0.2, across) * smoothstep(-tail, 0.0, along) * smoothstep(tail * 0.15, 0.0, along);
+    float d2 = 1.0 - shape;
+    core = shape;
+    halo = shape * 0.25;`
+    })
+  );
+
   window.SL_PASSES_EXTRA = T;
 })();

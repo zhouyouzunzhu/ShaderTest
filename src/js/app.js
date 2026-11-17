@@ -4083,10 +4083,10 @@ window.SL = window.SL || {};
       '创建后到时间轴上直接改（0 = 无限时间）再打关键帧。' +
       '做完点「导出效果包 JSON」下载，然后 <code>node tools/lib.mjs import 文件名.effect.json</code> + <code>build</code> 就进库了。</p>',
       '<h3>常见 Pass</h3>',
-      '<p>按 <kbd>N</kbd>（或左栏「插入 Pass」）打开选择器，顶部芯片可以按分组过滤：生成 / 调色 / 颜色 / 模糊 / 提取 / 边缘 / 合成 / 风格化 / 图案 / 扭曲 / 故障，目前 95 个模板。' +
+      '<p>按 <kbd>N</kbd>（或左栏「插入 Pass」）打开选择器，顶部芯片可以按分组过滤：生成 / 调色 / 颜色 / 模糊 / 提取 / 边缘 / 合成 / 风格化 / 图案 / 扭曲 / 故障，目前 102 个模板。' +
       '一个模板就是一个 Pass、只做一件事，插进来之后就是普通 Pass，代码、参数、绑定都能改，靠拼管线出复杂效果。</p>',
       '<p><b>叠加态</b>（调色 / 颜色 / 模糊 / 边缘 / 扭曲 / 图案 / 故障…）读上一 Pass 的输出再输出；' +
-      '<b>中间态</b>（21 个「生成」分组：噪声 / FBM / 沃罗诺伊 / 渐变 / 火焰 / 闪电 / 焦散…）不读输入、自己生成一张图，' +
+      '<b>中间态</b>（28 个「生成」分组：噪声 / FBM / 沃罗诺伊 / 渐变 / 火焰 / 闪电 / 焦散 / 粒子…）不读输入、自己生成一张图，' +
       '插在哪个 Pass 前面，那个 Pass 的「上一 Pass 输出」就是它；它自己不会成为整条管线的最终输出。' +
       '也可以在任何 Pass 的采样器里选「指定 Pass」指到它，当噪声、遮罩或位移图用。</p>' +
       '<p><b>合成类</b>（合成分组 21 个：加色 / 滤色 / 正片叠底 / 叠加 / 柔光 / 差值 / 颜色减淡加深 / 取色相饱和明度 / 火焰化 / 冰冻化 / 霓虹化…）' +
@@ -4169,6 +4169,10 @@ window.SL = window.SL || {};
       doc.assets = SL.deepClone((App.doc && App.doc.assets) || []);
       doc.ui = SL.deepClone((App.doc && App.doc.ui) || {});
       doc.passes = built.map(function (bp, i) { bp.id = 'p' + (i + 1); return bp; });
+      // 模板统一用 p1..pN，和上一个模板撞 id；旧的 parsed/compiled 若是同 id 的旧代码，
+      // 会在 selectPass → renderInspector 时先用旧 uniform 列表把默认值写进新 Pass。
+      Object.keys(App.parsed).forEach(function (k) { delete App.parsed[k]; });
+      Object.keys(App.compiled).forEach(function (k) { delete App.compiled[k]; });
       App.doc = SL.store.normalize(doc, { allowEmpty: false });
       App.time = 0; App.frame = 0;
       selectPass(App.doc.passes[0].id, true);

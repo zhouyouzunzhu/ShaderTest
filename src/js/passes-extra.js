@@ -819,7 +819,7 @@ void main() {
   float t = u_time * u_speed;
   // 往上卷的坐标：越往上越快
   vec2 p = vec2(uv.x * u_scale, uv.y * u_scale * 0.9 - t * 1.8);
-  float warp = vfbm(p * 1.7 + vec2(0.0, t * 0.6));
+  float warp = vfbm(p * 1.7 + vec2(0.0, -t * 0.6));
   float n = vfbm(p + vec2(warp * 0.9, 0.0));
   // 竖直方向的火柱：底部宽、顶部收
   float w = u_width * (1.0 - uv.y * 0.75);
@@ -1000,7 +1000,7 @@ uniform vec3  u_color;  // @color @default 0.75 0.82 0.95 @label 颜色
 void main() {
   vec2 uv = vUv;
   uv.x += uv.y * u_tilt;
-  uv.y -= u_time * u_speed;
+  uv.y += u_time * u_speed;   // 采样坐标 += t → 雨丝向下落
   vec2 g = vec2(uv.x * u_count, uv.y * u_count * 0.35);
   vec2 cell = floor(g);
   vec2 f = fract(g);
@@ -1286,7 +1286,7 @@ ${body}
      （p = p0 + v·t + ½g·t²），再按距离累加光斑。全部只读 u_time，无状态。 */
   function particleEntry(id, name, desc, d, extra) {
     const o = Object.assign({
-      count: 24, life: 1.8, speed: 0.35, gravity: -0.25, spread: 0.05,
+      count: 24, life: 1.8, speed: 0.35, gravity: -0.25, spread: 0.05, biasY: 0.0,
       swirl: 0, sway: 0, size: 0.022, soft: 0.6,
       color: '1 0.85 0.55', fade: 0.8, glow: 1.0, streak: 0
     }, d || {});
@@ -1325,6 +1325,8 @@ void main() {
     // 出生点与初速
     float ang = sl_hash21(vec2(fi, 9.1)) * 6.2831853;
     vec2 dir = vec2(cos(ang), sin(ang));
+    // 方向偏置：雪 / 雨要向下、余烬要向上，否则纯随机方向会有一半反着飘
+    dir = normalize(dir + vec2(0.0, ${o.biasY}));
     vec2 p0 = vec2(0.5) + (vec2(sl_hash21(vec2(fi, 3.3)), sl_hash21(vec2(fi, 5.5))) - 0.5) * u_spread * 2.0;
     float spd = u_speed * (0.45 + sl_hash21(vec2(fi, 7.7)) * 1.1);
     vec2 pos = p0 + dir * spd * (age * life);
@@ -1371,14 +1373,14 @@ ${extraBody}
     }),
 
     particleEntry('gen-snow', '飘雪', '自上而下缓慢飘落的雪点，横向正弦摇摆，落地前淡出', {
-      count: 52, life: 6.0, speed: 0.12, gravity: -0.05, spread: 0.55,
+      count: 52, life: 6.0, speed: 0.16, gravity: -0.10, spread: 0.55, biasY: -2.2,
       sway: 0.035, size: 0.011, soft: 0.7, color: '0.95 0.98 1', fade: 0.25, glow: 1.0
     }, {
       body: '    // 雪从上方落下：把出生点抬到画面上方\n    pos.y += 0.35;'
     }),
 
     particleEntry('gen-embers', '余烬上升', '向上飘的火星，带旋涡与随机闪烁；火焰 / 篝火的余烬层', {
-      count: 34, life: 2.6, speed: 0.16, gravity: 0.22, spread: 0.12,
+      count: 34, life: 2.6, speed: 0.16, gravity: 0.22, spread: 0.12, biasY: 1.6,
       swirl: 0.35, sway: 0.02, size: 0.009, soft: 0.5, color: '1 0.55 0.18', fade: 0.55, glow: 1.9
     }),
 
@@ -1388,7 +1390,7 @@ ${extraBody}
     }),
 
     particleEntry('gen-meteors', '流星', '沿固定方向拖尾的粒子：用方向拉伸的距离场做出速度感', {
-      count: 14, life: 1.6, speed: 0.7, gravity: -0.15, spread: 0.5,
+      count: 14, life: 1.6, speed: 0.7, gravity: -0.15, spread: 0.5, biasY: -2.0,
       size: 0.014, soft: 0.4, color: '0.75 0.9 1', fade: 0.6, glow: 1.4
     }, {
       uniforms: 'uniform float u_stretch;  // @range 0 8 @step 0.1 @default 3.5 @label 拖尾长度\n',

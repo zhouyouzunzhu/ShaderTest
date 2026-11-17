@@ -36,7 +36,7 @@ void main() {
   float t = u_time * u_speed;
 
   // 竖直方向拉长 + 向上滚动：火苗是细长的
-  vec2 q = vec2(p.x, p.y * 0.55 + t * 1.4);
+  vec2 q = vec2(p.x, p.y * 0.55 - t * 1.4);
   float n1 = fbm(q);
   float n2 = fbm(q * 2.3 + vec2(t * 0.6, -t * 0.3));
   float n = n1 * 0.72 + n2 * 0.42;

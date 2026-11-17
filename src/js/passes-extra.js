@@ -1127,5 +1127,158 @@ void main() {
 `
   });
 
+  /* ───────────── 合成 / 混合类 ─────────────
+     统一约定：u_tex 是当前画面（上一 Pass），u_layer 是「第二输入」。
+     u_layer 默认指向内置噪声图，插进管线后在「参数 / 纹理」里换成
+     任何一个生成类中间态 Pass（火焰、气泡、星空…）或图库里的图。 */
+  const BLEND = `
+float bl_luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
+
+vec3 bl_rgb2hsl(vec3 c) {
+  float mx = max(c.r, max(c.g, c.b));
+  float mn = min(c.r, min(c.g, c.b));
+  float l = (mx + mn) * 0.5;
+  float h = 0.0;
+  float s = 0.0;
+  if (mx > mn) {
+    float d = mx - mn;
+    s = l > 0.5 ? d / max(1e-5, 2.0 - mx - mn) : d / max(1e-5, mx + mn);
+    if (mx == c.r) h = (c.g - c.b) / d + (c.g < c.b ? 6.0 : 0.0);
+    else if (mx == c.g) h = (c.b - c.r) / d + 2.0;
+    else h = (c.r - c.g) / d + 4.0;
+    h /= 6.0;
+  }
+  return vec3(h, s, l);
+}
+
+float bl_hue2rgb(float p, float q, float t) {
+  if (t < 0.0) t += 1.0;
+  if (t > 1.0) t -= 1.0;
+  if (t < 1.0 / 6.0) return p + (q - p) * 6.0 * t;
+  if (t < 0.5) return q;
+  if (t < 2.0 / 3.0) return p + (q - p) * (2.0 / 3.0 - t) * 6.0;
+  return p;
+}
+
+vec3 bl_hsl2rgb(vec3 hsl) {
+  if (hsl.y <= 0.0) return vec3(hsl.z);
+  float q = hsl.z < 0.5 ? hsl.z * (1.0 + hsl.y) : hsl.z + hsl.y - hsl.z * hsl.y;
+  float p = 2.0 * hsl.z - q;
+  return vec3(bl_hue2rgb(p, q, hsl.x + 1.0 / 3.0),
+              bl_hue2rgb(p, q, hsl.x),
+              bl_hue2rgb(p, q, hsl.x - 1.0 / 3.0));
+}
+`;
+
+  /* 一个混合模板的工厂：只写混合函数体，其余样板统一生成 */
+  function blendEntry(id, name, desc, amountDefault, body, opt) {
+    const o = opt || {};
+    const layerBinding = o.layerBinding || { kind: 'asset', assetId: 'b:noise' };
+    return {
+      id: id, name: name, group: '合成', role: 'filter', desc: desc,
+      bindings: { u_layer: layerBinding },
+      code: BLEND + `
+uniform sampler2D u_layer;
+uniform float u_amount;  // @range 0 2 @step 0.01 @default ${amountDefault} @label 强度
+${o.glsl || ''}
+void main() {
+  vec3 a = texture(u_tex, vUv).rgb;
+  vec3 b = texture(u_layer, vUv).rgb;
+${body}
+  fragColor = vec4(c, 1.0);
+}
+`
+    };
+  }
+
+  T.push(
+    blendEntry('blend-add', '加色混合', '当前画面 + 第二输入，亮部直接叠上去；适合把火焰 / 能量 / 光斑加到画面上', 0.65,
+      '  vec3 c = a + b * u_amount;'),
+
+    blendEntry('blend-screen', '滤色', '比加色柔和：1-(1-A)(1-B)，暗部几乎不变，亮部自然叠亮', 1.0,
+      '  vec3 c = 1.0 - (1.0 - a) * (1.0 - b * u_amount);'),
+
+    blendEntry('blend-multiply', '正片叠底', '相乘：画面被第二输入压暗，适合阴影 / 污渍 / 材质贴附', 1.0,
+      '  vec3 c = mix(a, a * b, clamp(u_amount, 0.0, 1.0));'),
+
+    blendEntry('blend-overlay', '叠加', '亮处更亮、暗处更暗，对比度最高的通用混合', 1.0,
+      '  vec3 o = mix(2.0 * a * b, 1.0 - 2.0 * (1.0 - a) * (1.0 - b), b);\n' +
+      '  vec3 c = mix(a, o, clamp(u_amount, 0.0, 1.0));'),
+
+    blendEntry('blend-soft-light', '柔光', '叠加的温柔版：只轻微推对比，适合做质感而不是破坏画面', 1.0,
+      '  vec3 s = (1.0 - 2.0 * b) * a * a + 2.0 * b * a;\n' +
+      '  vec3 c = mix(a, s, clamp(u_amount, 0.0, 1.0));'),
+
+    blendEntry('blend-darken', '变暗', '逐通道取小的，第二输入是暗图案时等于「遮黑」', 1.0,
+      '  vec3 c = mix(a, min(a, b), clamp(u_amount, 0.0, 1.0));'),
+
+    blendEntry('blend-lighten', '变亮', '逐通道取大的，第二输入是亮图案时等于「只留亮部」', 1.0,
+      '  vec3 c = mix(a, max(a, b), clamp(u_amount, 0.0, 1.0));'),
+
+    blendEntry('blend-difference', '差值', '|A-B|，相同处变黑、边缘跳色；做「撞击 / 干扰」很好用', 1.0,
+      '  vec3 c = mix(a, abs(a - b), clamp(u_amount, 0.0, 1.0));'),
+
+    blendEntry('blend-exclusion', '排除', '比差值更灰，适合低频干扰与鬼影', 1.0,
+      '  vec3 c = mix(a, a + b - 2.0 * a * b, clamp(u_amount, 0.0, 1.0));'),
+
+    blendEntry('blend-dodge', '颜色减淡', 'A/(1-B)：第二输入越亮，画面越爆；适合做发光核心', 1.0,
+      '  vec3 c = min(vec3(1.0), a / max(vec3(1e-3), 1.0 - b));\n' +
+      '  c = mix(a, c, clamp(u_amount, 0.0, 1.0));'),
+
+    blendEntry('blend-burn', '颜色加深', '1-(1-A)/B：第二输入越暗，画面越焦；适合做灼烧 / 焦边', 1.0,
+      '  vec3 c = clamp(1.0 - (1.0 - a) / max(vec3(1e-3), b), 0.0, 1.0);\n' +
+      '  c = mix(a, c, clamp(u_amount, 0.0, 1.0));'),
+
+    blendEntry('blend-hue', '取第二输入的色相', '保留当前画面的明暗，只把颜色换成第二输入的色相', 1.0,
+      '  vec3 ha = bl_rgb2hsl(a);\n' +
+      '  vec3 hb = bl_rgb2hsl(b);\n' +
+      '  vec3 c = bl_hsl2rgb(vec3(hb.x, ha.y, ha.z));\n' +
+      '  c = mix(a, c, clamp(u_amount, 0.0, 1.0));'),
+
+    blendEntry('blend-sat', '取第二输入的饱和度', '明暗与色相不变，只把「颜色有多浓」换成第二输入的', 1.0,
+      '  vec3 ha = bl_rgb2hsl(a);\n' +
+      '  vec3 hb = bl_rgb2hsl(b);\n' +
+      '  vec3 c = bl_hsl2rgb(vec3(ha.x, hb.y, ha.z));\n' +
+      '  c = mix(a, c, clamp(u_amount, 0.0, 1.0));'),
+
+    blendEntry('blend-lum', '取第二输入的明度', '颜色留下、亮度跟着第二输入走；做「光影贴图」很省事', 1.0,
+      '  vec3 ha = bl_rgb2hsl(a);\n' +
+      '  vec3 hb = bl_rgb2hsl(b);\n' +
+      '  vec3 c = bl_hsl2rgb(vec3(ha.x, ha.y, hb.z));\n' +
+      '  c = mix(a, c, clamp(u_amount, 0.0, 1.0));'),
+
+    blendEntry('blend-alpha', '按第二输入的透明叠上', '第二张带 alpha 时按 alpha 叠；默认给的是图库里的「徽记」', 1.0,
+      '  vec4 l = texture(u_layer, vUv);\n' +
+      '  vec3 c = mix(a, l.rgb, clamp(l.a * u_amount, 0.0, 1.0));',
+      { layerBinding: { kind: 'asset', assetId: 'b:sprite' } }),
+
+    blendEntry('blend-mask', '亮度遮罩', '用第二输入的亮度当蒙版，在当前画面与本图之间过渡', 1.0,
+      '  float m = smoothstep(0.0, 1.0, bl_luma(b)) * u_amount;\n' +
+      '  vec3 c = mix(a, b, clamp(m, 0.0, 1.0));'),
+
+    blendEntry('blend-displace', '按第二输入扰动画面', '拿第二输入的 R/G 当位移向量推当前画面；配合火焰 / 噪声做热浪、水面', 0.35,
+      '  vec2 uv2 = vUv;\n' +
+      '  vec2 off = (texture(u_layer, vUv).rg - 0.5) * 0.12 * u_amount;\n' +
+      '  vec3 c = texture(u_tex, clamp(uv2 + off, 0.001, 0.999)).rgb;'),
+
+    blendEntry('tint-flame', '火焰化', '把第二输入的亮度映射成火焰色带再叠上去；先用「火焰」中间态再挂这个', 0.9,
+      '  float t = clamp(bl_luma(b) * 1.6, 0.0, 1.0);\n' +
+      '  vec3 ramp = mix(vec3(0.05, 0.01, 0.0), vec3(0.95, 0.30, 0.04), smoothstep(0.0, 0.55, t));\n' +
+      '  ramp = mix(ramp, vec3(1.0, 0.94, 0.62), smoothstep(0.55, 1.0, t));\n' +
+      '  vec3 c = a + ramp * t * u_amount;'),
+
+    blendEntry('tint-ice', '冰冻化', '冷色版：把第二输入的亮度映射成冰蓝 / 霜白，再叠一层冷调', 0.9,
+      '  float t = clamp(bl_luma(b) * 1.5, 0.0, 1.0);\n' +
+      '  vec3 ramp = mix(vec3(0.02, 0.05, 0.12), vec3(0.35, 0.75, 1.0), smoothstep(0.0, 0.6, t));\n' +
+      '  ramp = mix(ramp, vec3(0.92, 0.99, 1.0), smoothstep(0.6, 1.0, t));\n' +
+      '  vec3 c = mix(a, a * vec3(0.82, 0.94, 1.08), 0.6) + ramp * t * u_amount;'),
+
+    blendEntry('tint-neon', '霓虹化', '把第二输入的高亮部分染色成霓虹光，适合扫描线 / 网格 / 符文', 1.1,
+      '  float t = clamp(bl_luma(b) * 1.4, 0.0, 1.0);\n' +
+      '  vec3 ramp = mix(vec3(0.02, 0.0, 0.08), vec3(0.55, 0.10, 1.0), smoothstep(0.0, 0.6, t));\n' +
+      '  ramp = mix(ramp, vec3(0.35, 0.98, 1.0), smoothstep(0.6, 1.0, t));\n' +
+      '  vec3 c = a * 0.75 + ramp * t * u_amount;')
+  );
+
   window.SL_PASSES_EXTRA = T;
 })();

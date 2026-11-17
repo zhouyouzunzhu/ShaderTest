@@ -569,11 +569,10 @@ window.SL = window.SL || {};
         this.lastSamplers[p.id] = resolved;
         if (missing.length) this.lastMissing[p.id] = missing;
         else delete this.lastMissing[p.id];
-        // 中间态只供采样，不推进主链、也不当最终输出
-        if (p.role !== 'source') {
-          prevOut = out;
-          lastOut = out;
-        }
+        // prev 取「上一个渲染成功的 Pass」，中间态也算——这就是用户看到的「上一 Pass」；
+        // 但中间态不作为整条管线的最终输出（只供采样），所以 lastOut 仍然跳过它
+        prevOut = out;
+        if (p.role !== 'source') lastOut = out;
         drawn++;
       }
 

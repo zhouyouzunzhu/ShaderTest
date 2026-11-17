@@ -366,18 +366,18 @@ window.SL = window.SL || {};
       }
       const size = ctx.bindingSize ? ctx.bindingSize(binding) : null;
       if (size) extra.appendChild(SL.h('span', { class: 'uni-auto', text: size }));
-      // 「上一 Pass 输出」到底是谁：链路里前面没有生效的 Pass 时会退化成输入图，
-      // 这正是「明明选了 prev，画面却是原始贴图」的来源，直接写出来省得猜
+      // 「上一 Pass 输出」到底是谁：取上一个渲染成功的 Pass（中间态也算），
+      // 前面一个都没有时退化成输入图，直接写出来省得猜
       if (binding.kind === 'prev') {
         const idx = ctx.passes.findIndex(function (p) { return p.id === pass.id; });
         let up = null;
         for (let i = idx - 1; i >= 0; i--) {
           const p = ctx.passes[i];
-          if (p.enabled !== false && p.role !== 'source') { up = p; break; }
+          if (p.enabled !== false) { up = p; break; }
         }
         extra.appendChild(SL.h('span', {
           class: 'uni-auto' + (up ? '' : ' an'),
-          text: up ? '← ' + up.name : '← 输入图',
+          text: up ? '← ' + up.name + (up.role === 'source' ? '（中间态）' : '') : '← 输入图',
           title: up ? '实际取「' + up.name + '」的输出' : '前面没有生效的 Pass，实际取的是管线输入图'
         }));
       }

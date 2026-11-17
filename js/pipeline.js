@@ -19,7 +19,7 @@ window.SL = window.SL || {};
     const wrap = SL.h('div', { class: 'pass-tags' });
     if (pass.format === 'hdr') wrap.appendChild(tag('HDR', 'hdr', 'RGBA16F 浮点缓冲'));
     else wrap.appendChild(tag('8bit', '', 'RGBA8 缓冲'));
-    if (pass.role === 'source') wrap.appendChild(tag('中间态', 'src', '不读输入、不参与主链，供其他 Pass 用「指定 Pass」采样'));
+    if (pass.role === 'source') wrap.appendChild(tag('中间态', 'src', '不读输入、自己生成一张图；会作为「上一 Pass 输出」被下游采样，但本身不作为最终输出'));
     if (missing && missing.length) {
       const names = missing.map(function (m) { return m.name; }).join('、');
       wrap.appendChild(tag('绑定失效', 'bad', '这些采样器指向的目标不存在，渲染时会取黑图：' + names));

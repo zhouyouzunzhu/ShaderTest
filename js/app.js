@@ -2675,20 +2675,24 @@ window.SL = window.SL || {};
       return;
     }
     const cur = selectedPass();
-    // 中间态（生成类）不读输入，插到管线最前面才不会挡在消费它的 Pass 后面
+    // 中间态（生成类）插到「选中的 Pass 之前」：它天生是给下一个 Pass 当输入的，
+    // 这样刚插完就能看到下游拿它当「上一 Pass 输出」的效果
     const isSource = tpl.role === 'source';
-    const at = isSource ? 0 : (cur ? App.doc.passes.indexOf(cur) + 1 : App.doc.passes.length);
+    const at = cur
+      ? (isSource ? App.doc.passes.indexOf(cur) : App.doc.passes.indexOf(cur) + 1)
+      : App.doc.passes.length;
     built.forEach(function (bp, k) {
       bp.id = nextPassId();
       App.doc.passes.splice(at + k, 0, bp);
     });
     compileAll();
-    selectPass(built[0].id);
+    // 插入中间态时把选中留在「消费它的那个 Pass」上，预览直接显示合成后的效果
+    selectPass(isSource && cur ? cur.id : built[0].id);
     renderPipeline();
     syncResolutionLabel();
     setDirty();
     SL.ui.toast(isSource
-      ? '已插入「' + tpl.name + '」到管线开头：它是中间态，在后面 Pass 的采样器里选「指定 Pass」就能采样它'
+      ? '已插入「' + tpl.name + '」：中间态，下面那个 Pass 的「上一 Pass 输出」现在就是它'
       : '已插入：' + tpl.name, 'ok');
     if (built.length === 1) App.editor.focus();
   }
@@ -2741,7 +2745,7 @@ window.SL = window.SL || {};
       '<div class="pp-search"><input id="pp-input" type="text" placeholder="搜索 Pass（名称 / 说明）…" spellcheck="false" autocomplete="off"></div>' +
       '<div class="pp-chips" id="pp-chips"></div>' +
       '<div class="pp-list" id="pp-list"></div>' +
-      '<div class="pp-foot">回车插入到当前 Pass 之后 · <b>中间态</b>不读输入，用「指定 Pass」被其他 Pass 采样 · Esc 取消</div>' +
+      '<div class="pp-foot">回车插入到当前 Pass 之后 · <b>中间态</b>会插到选中 Pass 之前，直接当作它的「上一 Pass 输出」· Esc 取消</div>' +
       '</div>';
 
     passPicker = SL.ui.modal({
@@ -4082,8 +4086,9 @@ window.SL = window.SL || {};
       '<p>按 <kbd>N</kbd>（或左栏「插入 Pass」）打开选择器，顶部芯片可以按分组过滤：生成 / 调色 / 颜色 / 模糊 / 提取 / 边缘 / 合成 / 风格化 / 图案 / 扭曲 / 故障，目前 75 个模板。' +
       '一个模板就是一个 Pass、只做一件事，插进来之后就是普通 Pass，代码、参数、绑定都能改，靠拼管线出复杂效果。</p>',
       '<p><b>叠加态</b>（调色 / 颜色 / 模糊 / 边缘 / 扭曲 / 图案 / 故障…）读上一 Pass 的输出再输出；' +
-      '<b>中间态</b>（21 个「生成」分组：噪声 / FBM / 沃罗诺伊 / 渐变 / 火焰 / 闪电 / 焦散…）不读输入、自己生成一张图，插到管线最前面但不参与主链——' +
-      '在别的 Pass 的采样器里选「指定 Pass」指到它，才能拿来当噪声、遮罩或位移图。</p>',
+      '<b>中间态</b>（21 个「生成」分组：噪声 / FBM / 沃罗诺伊 / 渐变 / 火焰 / 闪电 / 焦散…）不读输入、自己生成一张图，' +
+      '插在哪个 Pass 前面，那个 Pass 的「上一 Pass 输出」就是它；它自己不会成为整条管线的最终输出。' +
+      '也可以在任何 Pass 的采样器里选「指定 Pass」指到它，当噪声、遮罩或位移图用。</p>',
       '<h3>播放与时长</h3>',
       '<p>播放 / 单帧 / 单帧后退 / 归零都在时间轴左边；「时长」输入框直接改这个管线的时长：' +
       '<code>0</code> 表示无限时间（u_time 一直涨），大于 0 时时间按它循环，并且可以给参数打关键帧。</p>',

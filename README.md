@@ -92,12 +92,14 @@ void main() {
 
 ```
 content/effects/
-  slash-arc/
-    effect.json          # id / 名字 / 标签 / 时长 / 循环 / 输出尺寸与 alpha
-    shaders/sweep.frag   # 每个 Pass 一个文件，可读可 diff
-    input/…              # 可选：这个效果要用的贴图
-  index.json             # 构建产物：给工具和 AI 读
-  index.js               # 构建产物：给页面读（file:// 下用 <script> 载入）
+  lava-field/
+    effect.json            # id / 名字 / 标签 / 时长 / 循环 / 输出尺寸与 alpha
+    shaders/base.frag      # 每个 Pass 一个文件，可读可 diff
+    shaders/fire.frag
+    shaders/blend.frag
+    input/…                # 可选：这个效果要用的贴图
+  index.json               # 构建产物：给工具和 AI 读
+  index.js                 # 构建产物：给页面读（file:// 下用 <script> 载入）
 ```
 
 - **加效果**：`node tools/new.mjs my-effect --name "我的效果" --tags 刀光,一次性 --duration 0.6 --alpha`，改完 `.frag` 跑一次 `node tools/lib.mjs build`，刷新页面就有。也可以在图库里点「＋ 新建效果」现场做一个，再导出成效果包导回来。
@@ -289,15 +291,17 @@ uniform sampler2D u_tex;   // @label 输入图
 
 ## 效果库里的效果
 
-| 效果 | 说明 |
-| --- | --- |
-| 刀光·弧形横扫 | 一次性：角度扫过，头部亮线 + 身后拖尾，带 alpha，可叠在武器上 |
-| 道具·斜向刷光 | 一次性：一条斜向光带掠过贴图，只在不透明像素上出现（用贴图 alpha 遮罩） |
-| 描边·呼吸闪光 | 从贴图 alpha 提边（Sobel）+ 外发光，亮度随时间呼吸，适合「可交互物件」高亮 |
-| 水流·扰动与反光 | 两层滚动噪声推 UV + 乘积高光，适合验证「水面/热浪」类算法 |
-| UI·碎裂飘散 | 一次性：任务完成式横幅裂成碎片，各自翻转、被风带向四周并下坠，边缘亮暖金后消散。两个 Pass：`面板`（中间态生成 UI）+ `碎裂`（Voronoi 切分，采样它） |
+这几个是「示例」，重点不是好看，而是演示**中间态 + 合成**能拼出什么：每个都能在时间轴上拖，参数都在右侧。
 
-写自己的效果时，先 `node tools/new.mjs` 生成骨架，再照着 `docs/EFFECT_FORMAT.md` 改。
+| 效果 | Pass 结构 | 说明 |
+| --- | --- | --- |
+| 熔岩地表 | 底图 → 火焰(中间态) → 火焰化(合成) | 木纹底图被火焰亮度烘暖，火焰是独立生成的中间态，合成 Pass 用「指定 Pass」采样它 |
+| 霓虹网格 | 网格(中间态) → 扫描发光 | 整张图没有外部素材：透视网格 + 地平线辉光全是算出来的 |
+| 星云漂流 | 星云(中间态) + 星点(中间态) → 滤色叠加(合成) | 两张程序纹理用「滤色」合成，演示两层中间态怎么叠 |
+| 水墨山峦 | 山峦(中间态) → 水墨 | 脊状噪声出山形，水墨 Pass 压阶调 + 纸纹 + 边缘墨渗 |
+| 全息故障 | 底图 → 全息 | 扫描线 + RGB 错位 + 横向撕裂，参数拆成五个，一条条调 |
+
+写自己的效果时，先 `node tools/new.mjs` 生成骨架，再照着 `docs/EFFECT_FORMAT.md` 改；想省事也可以在页面里拼好管线，用「新建效果」→「写入 effects/」直接落盘。
 
 ---
 
@@ -388,7 +392,7 @@ shaderTest/
 │   ├── EFFECT_FORMAT.md 效果包格式与写作约定
 │   ├── screenshot.png
 │   ├── library.png
-│   └── effect-ui-shatter.png
+│   ├── effect-ui-shatter.png   # 旧示例图（效果已删，留档）
 ```
 
 ---
@@ -402,8 +406,8 @@ SL.test.checkAll();            // 遍历全部 Pass 模板，返回每个 Pass �
 SL.test.loadTemplate('glow');  // 清空后用该模板起一条管线（模板见 SL.passes.list）
 SL.test.pixel(360, 240);       // 读预览中心像素 [r,g,b,a]（0..1）
 SL.test.effects();             // 效果库索引里的全部效果对象
-SL.test.loadEffect('slash-arc');   // 装载某个效果
-await SL.test.thumb('slash-arc');  // 渲染一张该效果的缩略图 dataURL
+SL.test.loadEffect('lava-field');   // 装载某个效果
+await SL.test.thumb('nebula-drift');  // 渲染一张该效果的缩略图 dataURL
 SL.test.pack('my-id', '我的效果');  // 把当前文档打包成效果包对象（等同「下载效果包 JSON」）
 ```
 

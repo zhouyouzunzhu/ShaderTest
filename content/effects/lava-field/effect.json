@@ -1,0 +1,32 @@
+{
+  "id": "lava-field",
+  "name": "熔岩地表",
+  "desc": "木纹底图被火焰中间态「烧」过去：火焰亮度映射成色带，再按亮度叠回底图。拖时间轴看火势流走。",
+  "tags": ["示例", "循环", "合成", "火焰"],
+  "duration": 0,
+  "loop": true,
+  "output": { "w": 1280, "h": 720, "alpha": false },
+  "inputs": {
+    "wood": "library:wood-1853403"
+  },
+  "passes": [
+    {
+      "name": "底图",
+      "shader": "shaders/base.frag",
+      "bindings": { "u_img": { "kind": "asset", "input": "wood" } }
+    },
+    {
+      "name": "火焰",
+      "shader": "shaders/fire.frag",
+      "role": "source"
+    },
+    {
+      "name": "火焰化",
+      "shader": "shaders/blend.frag",
+      "bindings": {
+        "u_tex": { "kind": "pass", "pass": "p1" },
+        "u_layer": { "kind": "pass", "pass": "p2" }
+      }
+    }
+  ]
+}

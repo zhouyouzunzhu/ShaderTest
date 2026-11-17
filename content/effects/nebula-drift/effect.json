@@ -1,0 +1,22 @@
+{
+  "id": "nebula-drift",
+  "name": "星云漂流",
+  "desc": "两层程序纹理合成：星云负责颜色，星点负责细节，最后用「滤色」把它们叠在一起。",
+  "tags": ["示例", "循环", "合成", "生成"],
+  "duration": 0,
+  "loop": true,
+  "output": { "w": 1280, "h": 720, "alpha": false },
+  "inputs": {},
+  "passes": [
+    { "name": "星云", "shader": "shaders/nebula.frag", "role": "source" },
+    { "name": "星点", "shader": "shaders/stars.frag", "role": "source" },
+    {
+      "name": "滤色叠加",
+      "shader": "shaders/screen.frag",
+      "bindings": {
+        "u_tex": { "kind": "pass", "pass": "p1" },
+        "u_layer": { "kind": "pass", "pass": "p2" }
+      }
+    }
+  ]
+}

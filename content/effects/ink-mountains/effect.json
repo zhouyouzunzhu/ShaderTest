@@ -1,0 +1,18 @@
+{
+  "id": "ink-mountains",
+  "name": "水墨山峦",
+  "desc": "脊状噪声当山形，再用水墨滤镜压成几阶灰、撒上纸纹；没有一张贴图，全是 Pass 算出来的。",
+  "tags": ["示例", "循环", "生成", "水墨"],
+  "duration": 0,
+  "loop": true,
+  "output": { "w": 1280, "h": 720, "alpha": false },
+  "inputs": {},
+  "passes": [
+    { "name": "山峦", "shader": "shaders/ridge.frag", "role": "source" },
+    {
+      "name": "水墨",
+      "shader": "shaders/ink.frag",
+      "bindings": { "u_src": { "kind": "prev" } }
+    }
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "id": "holo-glitch",
+  "name": "全息故障",
+  "desc": "内置渐变图当底，扫描线 + RGB 错位 + 横向撕裂：把「故障感」拆成几个独立参数，一条条调。",
+  "tags": ["示例", "循环", "故障", "合成"],
+  "duration": 0,
+  "loop": true,
+  "output": { "w": 1280, "h": 720, "alpha": false },
+  "inputs": { "base": "builtin:testcard" },
+  "passes": [
+    {
+      "name": "底图",
+      "shader": "shaders/base.frag",
+      "bindings": { "u_img": { "kind": "asset", "input": "base" } }
+    },
+    {
+      "name": "全息",
+      "shader": "shaders/holo.frag",
+      "bindings": { "u_src": { "kind": "prev" } }
+    }
+  ]
+}

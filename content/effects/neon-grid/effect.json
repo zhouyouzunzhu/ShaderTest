@@ -1,0 +1,18 @@
+{
+  "id": "neon-grid",
+  "name": "霓虹网格",
+  "desc": "纯程序生成的透视网格 + 扫描线与色散：整张图没有一个像素来自外部素材，全部由 Pass 叠出来。",
+  "tags": ["示例", "循环", "生成", "霓虹"],
+  "duration": 0,
+  "loop": true,
+  "output": { "w": 1280, "h": 720, "alpha": false },
+  "inputs": {},
+  "passes": [
+    { "name": "网格", "shader": "shaders/grid.frag", "role": "source" },
+    {
+      "name": "扫描发光",
+      "shader": "shaders/scan.frag",
+      "bindings": { "u_src": { "kind": "prev" } }
+    }
+  ]
+}

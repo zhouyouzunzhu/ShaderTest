@@ -410,6 +410,73 @@ void main() {
 `
   });
 
+  T.push({
+    id: 'blur-frost', name: '毛玻璃', group: '模糊', role: 'filter',
+    desc: '霜面散射：每个像素朝自己的随机方向散开采样，再压一点饱和度、抬一点黑位',
+    code: `
+uniform float u_radius; // @range 0.002 0.06 @step 0.001 @default 0.010 @label 模糊半径
+uniform float u_grain;  // @range 0 1 @step 0.01 @default 0.6 @label 霜面颗粒
+uniform float u_desat;  // @range 0 1 @step 0.01 @default 0.22 @label 去色
+uniform float u_lift;   // @range 0 1 @step 0.01 @default 0.35 @label 玻璃亮泽
+uniform float u_glow;   // @range 0 1 @step 0.01 @default 0.18 @label 边缘泛白
+
+float fh(vec2 p) {
+  return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+}
+
+void main() {
+  vec2 uv = vUv;
+
+  // 每个像素自己的朝向：整圆随机，这样散开的样子是「霜面」而不是规整的圆模糊
+  float ang0 = fh(floor(uv * u_resolution * 0.35)) * 6.2831853;
+
+  // 玻璃不平整：整块采样域按像素随机错开，才有「透过有厚度的玻璃看」的波纹感
+  vec2 warp = (vec2(fh(uv * 41.3), fh(uv * 73.9 + 11.0)) - 0.5);
+  vec2 base = uv + warp * u_radius * 1.1 * u_grain;
+
+  vec3 acc = vec3(0.0);
+  float wsum = 0.0;
+  const int N = 20;
+  for (int i = 0; i < N; i++) {
+    float fi = float(i);
+    // 圆盘内均匀分布：半径取 sqrt 才不会全挤在中心
+    float rr = sqrt((fi + 0.5) / float(N));
+    float aa = fi * 2.3999632 + ang0;          // 黄金角 + 每像素旋转
+    vec2 off = vec2(cos(aa), sin(aa)) * rr * u_radius;
+
+    // 折射抖动：让采样点不只是平滑铺开，而是有一点「颗粒折射」
+    vec2 jit = (vec2(fh(uv * 91.7 + fi), fh(uv * 57.3 + fi * 2.7)) - 0.5);
+    off += jit * u_radius * 0.5 * u_grain;
+
+    // 中心权重高一点，边缘更散
+    float w = 1.0 - 0.45 * rr;
+    acc += texture(u_tex, base + off).rgb * w;
+    wsum += w;
+  }
+  vec3 c = acc / max(wsum, 1e-4);
+
+  // 玻璃质感：略去色、抬黑位、蒙一层奶白、加一点霜面细颗粒
+  float l = dot(c, vec3(0.299, 0.587, 0.114));
+  c = mix(c, vec3(l), u_desat);
+  c += (1.0 - c) * 0.06 * u_lift;
+  c = mix(c, vec3(0.96), 0.05 * u_lift);      // 一层薄薄的奶白，像水汽
+  float sp = fh(uv * u_resolution * 0.75);
+  c *= 1.0 - u_grain * 0.08 * sp;
+
+  // 稀少的高光点：像玻璃表面偶尔反一下光
+  float spark = step(0.996, fh(uv * u_resolution * 1.7));
+  c += spark * 0.35 * u_lift;
+
+  // 边缘泛白：越靠画面外圈越像蒙了一层水汽
+  vec2 d = uv - 0.5;
+  float edge = smoothstep(0.25, 0.72, length(d));
+  c += edge * u_glow * 0.25;
+
+  fragColor = vec4(c, texture(u_tex, vUv).a);
+}
+`
+  });
+
   /* ============================== 图案 ============================== */
 
   T.push({

@@ -82,15 +82,18 @@ node tools/lib.mjs build
 | `bindings` | 采样器绑定，键是 uniform 名 |
 | `role` | `filter`（默认，读上一个 Pass）或 `source`（中间态：自己生成、不推进主链，只能被「指定 Pass」采样） |
 
-中间态的用法：把生成类 Pass 写成 `"role": "source"`，后面的 Pass 用 `{"kind":"pass","pass":"p1"}` 采样它，这样主链画面不会被它顶掉。`content/effects/ui-shatter` 就是一个例子（`panel` 是中间态，`shatter` 采样它）。
+中间态的用法：把生成类 Pass 写成 `"role": "source"`，后面的 Pass 用 `{"kind":"pass","pass":"p1"}` 采样它，这样主链画面不会被它顶掉。`content/effects/lava-field` 就是一个例子（`p2` 是火焰中间态，`p3` 用它做火焰化合成）。
 
 `bindings` 的 `kind`：
 
 - `{"kind":"asset","input":"sprite"}` —— 绑到 `inputs` 里声明的贴图
 - `{"kind":"pass","pass":"p1"}` —— 绑到某个 Pass 的输出（`p1` 是 Pass 的下标+1）
-- `{"kind":"prev"}` —— 上一个 Pass（第一个 Pass 得到输入图）
+- `{"kind":"prev"}` —— **字面上的上一个 Pass**（含中间态；第一个 Pass 得到输入图）
 - `{"kind":"self"}` —— 自身上一帧（反馈 / 流体）
 - `{"kind":"none"}` —— 不绑
+
+> 注意 `prev` 的语义：如果在底图和合成之间插了一个中间态，合成 Pass 的 `prev` 拿到的是那个中间态，不是底图。
+> 要做「底图 + 效果」两输入合成，就把 `u_tex` 显式绑到 `p1`、第二输入绑到中间态（见 `lava-field` 的 `p3`）。
 
 ## 写 shader 时能直接用
 

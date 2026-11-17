@@ -1103,6 +1103,16 @@ window.SL = window.SL || {};
         updatePassTimes();
       }
     }
+
+    // 绑定失效状态变了才重建左栏（缺目标 → 标签要立刻出现/消失）
+    const miss = App.engine.lastMissing || {};
+    const sig = Object.keys(miss).sort().map(function (id) {
+      return id + ':' + miss[id].map(function (m) { return m.name; }).join(',');
+    }).join('|');
+    if (sig !== App.missSig) {
+      App.missSig = sig;
+      renderPipeline();
+    }
   }
 
   /** 只更新每个 Pass 条目的耗时徽标 */
@@ -2390,6 +2400,7 @@ window.SL = window.SL || {};
       selectedId: App.doc.selectedPassId,
       errors: errors,
       passMs: App.passMs,
+      missing: App.engine && App.engine.lastMissing,
       uniformsOf: function (id) { return App.parsed[id] || []; },
       onSelect: function (id) { selectPass(id); },
       onToggle: function (id) {
@@ -2772,8 +2783,8 @@ window.SL = window.SL || {};
       filtered = entries.filter(function (e) {
         if (curGroup && e.group !== curGroup) return false;
         if (!q) return true;
-        return (e.name + ' ' + (e.desc || '') + ' ' + (e.group || '') + ' ' +
-          (e.code || '').toLowerCase()).indexOf(q) >= 0;
+        // 整段 haystack 都要小写：只小写 code 会让「Sobel」这类大写查询搜不到中文名里的大写字母
+        return (e.name + ' ' + (e.desc || '') + ' ' + (e.group || '') + ' ' + (e.code || '')).toLowerCase().indexOf(q) >= 0;
       });
       sel = 0;
       draw();
@@ -3357,6 +3368,23 @@ window.SL = window.SL || {};
       ['代码行数', (pass.code || '').split('\n').length],
       ['编译', res ? (res.ok ? '通过' : '失败') : '未编译']
     ]));
+    // 这一帧每个采样器实际吃到什么（UI 写 prev 却看到别的图时，先看这里）
+    const got = (App.engine && App.engine.lastSamplers && App.engine.lastSamplers[pass.id]) || null;
+    const lost = (App.engine && App.engine.lastMissing && App.engine.lastMissing[pass.id]) || null;
+    const kn = { prev: '上一 Pass 输出', asset: '纹理', pass: '指定 Pass', self: '自身上一帧' };
+    if (got && Object.keys(got).length) {
+      const rows = Object.keys(got).map(function (n) {
+        const r = got[n];
+        return [n, (kn[r.kind] || r.kind) + (r.label ? '：' + r.label : '') + '　' + r.w + '×' + r.h];
+      });
+      s1.appendChild(SL.h('div', { class: 'insp-head' }, SL.h('span', { text: '这一帧的采样' })));
+      s1.appendChild(kv(rows));
+    }
+    if (lost && lost.length) {
+      s1.appendChild(kv(lost.map(function (m) {
+        return [m.name, '绑定目标不存在（' + (m.target || m.kind) + '），当前取黑图'];
+      })));
+    }
     host.appendChild(s1);
 
     const s2 = SL.h('div', { class: 'insp-section' });
@@ -4150,6 +4178,16 @@ window.SL = window.SL || {};
     },
     state: function () { return App; },
     pixel: function (x, y) { return App.engine.readPixel(x, y); },
+    /** 这一帧每个 Pass 的采样器实际吃到了什么（排「UI 写 prev、画面却是别的图」用） */
+    bindings: function () {
+      return {
+        samplers: App.engine.lastSamplers,
+        missing: App.engine.lastMissing,
+        doc: App.doc.passes.map(function (p) {
+          return { id: p.id, name: p.name, bindings: SL.deepClone(p.bindings || {}) };
+        })
+      };
+    },
     // 效果库：给自动化 / AI 用的入口
     effects: function () { return libraryEffects(); },
     effectDoc: function (id) {

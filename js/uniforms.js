@@ -366,6 +366,21 @@ window.SL = window.SL || {};
       }
       const size = ctx.bindingSize ? ctx.bindingSize(binding) : null;
       if (size) extra.appendChild(SL.h('span', { class: 'uni-auto', text: size }));
+      // 「上一 Pass 输出」到底是谁：链路里前面没有生效的 Pass 时会退化成输入图，
+      // 这正是「明明选了 prev，画面却是原始贴图」的来源，直接写出来省得猜
+      if (binding.kind === 'prev') {
+        const idx = ctx.passes.findIndex(function (p) { return p.id === pass.id; });
+        let up = null;
+        for (let i = idx - 1; i >= 0; i--) {
+          const p = ctx.passes[i];
+          if (p.enabled !== false && p.role !== 'source') { up = p; break; }
+        }
+        extra.appendChild(SL.h('span', {
+          class: 'uni-auto' + (up ? '' : ' an'),
+          text: up ? '← ' + up.name : '← 输入图',
+          title: up ? '实际取「' + up.name + '」的输出' : '前面没有生效的 Pass，实际取的是管线输入图'
+        }));
+      }
       if (binding.kind === 'self') {
         extra.appendChild(SL.h('span', { class: 'uni-auto an', text: 'ping-pong' }));
       }
@@ -373,10 +388,20 @@ window.SL = window.SL || {};
 
     sel.addEventListener('change', function () {
       binding.kind = sel.value;
-      if (binding.kind === 'asset' && !binding.assetId && ctx.assets.items[0]) binding.assetId = ctx.assets.items[0].id;
-      if (binding.kind === 'pass' && !binding.passId) {
-        const other = ctx.passes.filter(function (p) { return p.id !== pass.id; })[0];
-        if (other) binding.passId = other.id;
+      // 切走之后把另一类绑定的残留清掉：否则 store 里会留着一个看不见的 assetId/passId，
+      // 之后只看文件根本判断不出这一行到底在采样什么
+      if (binding.kind === 'asset') {
+        delete binding.passId;
+        if (!binding.assetId && ctx.assets.items[0]) binding.assetId = ctx.assets.items[0].id;
+      } else if (binding.kind === 'pass') {
+        delete binding.assetId;
+        if (!binding.passId) {
+          const other = ctx.passes.filter(function (p) { return p.id !== pass.id; })[0];
+          if (other) binding.passId = other.id;
+        }
+      } else {
+        delete binding.assetId;
+        delete binding.passId;
       }
       ctx.onBindingChange(u.name, binding);
       sync();

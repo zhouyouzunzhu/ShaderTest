@@ -110,6 +110,8 @@ window.SL = window.SL || {};
       this.timer = gl.getExtension('EXT_disjoint_timer_query_webgl2');
       this.passQueries = [];
       this.passMs = {};
+      this.lastSamplers = {};  // passId → { samplerName: {kind,label,w,h} }，排错用
+      this.lastMissing = {};   // passId → [{name,kind,target}]，绑定目标不存在
       this.gpuMs = 0;
       this.gpuMeasured = false;
 
@@ -376,6 +378,8 @@ window.SL = window.SL || {};
       const gl = this.gl;
       let unit = 0;
       const list = entry.uniforms;
+      // 每个采样器都显式绑定（缺目标绑黑图）。否则缺绑定的采样器会沿用
+      // 上一个 Pass 留在同一纹理单元上的贴图，表现就像「显示上次用的纹理」。
       for (let i = 0; i < list.length; i++) {
         const rec = list[i];
         const name = rec.name;
@@ -456,6 +460,7 @@ window.SL = window.SL || {};
         if (!state.passes.some((p) => p.id === id)) delete this.passMs[id];
       }
       this.pruneTargets(state.passes.map((p) => p.id));
+      this.lastMissing = {};
       const outputs = {}; // passId → {tex,w,h}
       let prevOut = env.source || null;
       let drawn = 0, skipped = 0;
@@ -474,6 +479,8 @@ window.SL = window.SL || {};
         // —— 解析采样器绑定 ——
         const bindings = p.bindings || {};
         const samplers = {};
+        const resolved = {};   // 这一帧每个采样器最终吃到什么（排错用）
+        const missing = [];    // 声明了绑定但目标不存在（会显示黑图，得让人看见）
         let needsSelf = false;
         Object.keys(bindings).forEach((sname) => {
           const b = bindings[sname];
@@ -481,18 +488,21 @@ window.SL = window.SL || {};
           if (b.kind === 'self') { needsSelf = true; return; }
           if (b.kind === 'asset') {
             const t = env.assets && env.assets[b.assetId];
-            samplers[sname] = t || null;
+            if (t) { samplers[sname] = t; resolved[sname] = { kind: 'asset', label: b.assetId, w: t.w, h: t.h }; }
+            else missing.push({ name: sname, kind: 'asset', target: b.assetId });
             return;
           }
           if (b.kind === 'pass') {
             // passId === '__source__' 表示直接取管线原始输入（用于「原图 + 效果」合成）
             const t = b.passId === '__source__' ? env.source : outputs[b.passId];
-            if (t) samplers[sname] = t;
+            if (t) { samplers[sname] = t; resolved[sname] = { kind: 'pass', label: b.passId, w: t.w, h: t.h }; }
+            else missing.push({ name: sname, kind: 'pass', target: b.passId });
             return;
           }
           // prev：跳过中间态（role:'source'）的 Pass，它们不参与主链
           const t = prevOut || env.source;
-          if (t) samplers[sname] = t;
+          if (t) { samplers[sname] = t; resolved[sname] = { kind: 'prev', label: '', w: t.w, h: t.h }; }
+          else missing.push({ name: sname, kind: 'prev' });
         });
         // 兜底：声明了 sampler 但完全没配置绑定 → prev
         entry.uniforms.forEach((u) => {
@@ -500,7 +510,10 @@ window.SL = window.SL || {};
           if (samplers[u.name]) return;
           if (bindings[u.name]) return;
           const t = prevOut || env.source;
-          if (t) samplers[u.name] = t;
+          if (t) {
+            samplers[u.name] = t;
+            resolved[u.name] = { kind: 'prev', label: '（未配置）', w: t.w, h: t.h };
+          }
         });
 
         // —— 选目标（反馈时 ping-pong，写旧读新） ——
@@ -553,6 +566,9 @@ window.SL = window.SL || {};
         if (needsSelf) rt.cur = dstSlot;
         const out = { tex: dst.tex, w: pw, h: ph };
         outputs[p.id] = out;
+        this.lastSamplers[p.id] = resolved;
+        if (missing.length) this.lastMissing[p.id] = missing;
+        else delete this.lastMissing[p.id];
         // 中间态只供采样，不推进主链、也不当最终输出
         if (p.role !== 'source') {
           prevOut = out;

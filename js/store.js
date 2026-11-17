@@ -192,11 +192,15 @@ window.SL = window.SL || {};
             const b = raw.bindings[k];
             if (!b || typeof b !== 'object') return;
             const kind = ['prev', 'self', 'asset', 'pass', 'none'].indexOf(b.kind) >= 0 ? b.kind : 'prev';
-            p.bindings[k] = {
-              kind: kind,
-              assetId: typeof b.assetId === 'string' ? b.assetId : undefined,
-              passId: typeof b.passId === 'string' ? b.passId : undefined
-            };
+            // 只保留与该 kind 相关的字段：老文档里 common 会留下「kind=prev 却带 passId」，
+            // 光看数据判断不出这一行到底采样什么，UI 也会显示互相矛盾的选项
+            const nb = { kind: kind };
+            if (kind === 'asset') {
+              if (typeof b.assetId === 'string') nb.assetId = b.assetId;
+            } else if (kind === 'pass') {
+              if (typeof b.passId === 'string') nb.passId = b.passId;
+            }
+            p.bindings[k] = nb;
           });
         }
         if (raw.values && typeof raw.values === 'object') {

@@ -15,11 +15,15 @@ window.SL = window.SL || {};
   }
 
   /** 每个 pass 的标签行 */
-  function tagsFor(pass, uniforms, gpuMs) {
+  function tagsFor(pass, uniforms, gpuMs, missing) {
     const wrap = SL.h('div', { class: 'pass-tags' });
     if (pass.format === 'hdr') wrap.appendChild(tag('HDR', 'hdr', 'RGBA16F 浮点缓冲'));
     else wrap.appendChild(tag('8bit', '', 'RGBA8 缓冲'));
     if (pass.role === 'source') wrap.appendChild(tag('中间态', 'src', '不读输入、不参与主链，供其他 Pass 用「指定 Pass」采样'));
+    if (missing && missing.length) {
+      const names = missing.map(function (m) { return m.name; }).join('、');
+      wrap.appendChild(tag('绑定失效', 'bad', '这些采样器指向的目标不存在，渲染时会取黑图：' + names));
+    }
     if (pass.scale !== 1) wrap.appendChild(tag(pass.scale + '×', 'scale', '相对输出分辨率'));
     const texCount = (uniforms || []).filter(function (u) { return u.kind === 'sampler'; }).length;
     if (texCount) wrap.appendChild(tag(texCount + ' tex', 'tex', texCount + ' 个纹理输入'));
@@ -72,7 +76,7 @@ window.SL = window.SL || {};
       const main = SL.h('div', { class: 'pass-main' });
       const nameEl = SL.h('div', { class: 'pass-name', text: pass.name || ('Pass ' + (i + 1)) });
       main.appendChild(nameEl);
-      main.appendChild(tagsFor(pass, ctx.uniformsOf ? ctx.uniformsOf(pass.id) : null, ctx.passMs && ctx.passMs[pass.id]));
+      main.appendChild(tagsFor(pass, ctx.uniformsOf ? ctx.uniformsOf(pass.id) : null, ctx.passMs && ctx.passMs[pass.id], ctx.missing && ctx.missing[pass.id]));
       item.appendChild(main);
 
       if (errs.length) {

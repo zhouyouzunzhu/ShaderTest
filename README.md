@@ -35,21 +35,21 @@ node server/index.mjs --open    # 顺便打开浏览器
 
 | 你做的操作 | 落到的文件 |
 | --- | --- |
-| 编辑器右上角「存为 Pass」 | `passes/<id>.mjs`（一个 Pass 一个文件，可以手写、可以让 AI 生成） |
-| 当前管线（自动保存） | `project.json`（已在 `.gitignore` 里，属于会话状态） |
-| 效果库里的效果 | `effects/<id>/{effect.json, shaders/*.frag}` |
-| 公共图库的图 | `library/<文件名>` |
+| 编辑器右上角「存为 Pass」 | `content/passes/<id>.mjs`（一个 Pass 一个文件，可以手写、可以让 AI 生成） |
+| 当前管线（自动保存） | `.state/project.json`（整个目录在 `.gitignore` 里，属于会话状态） |
+| 效果库里的效果 | `content/effects/<id>/{effect.json, shaders/*.frag}` |
+| 公共图库的图 | `content/library/<文件名>` |
 
 - 顶栏会出现一个「磁盘」小标签：绿=在存文件，灰「浏览器」=没启动服务（一切照旧，只是不落盘）。
-- 改了 `passes/`、`library/`、`effects/` 里的文件不用刷页面：服务通过 SSE 推一条消息，编辑器会自动重载对应的库（顶栏右下角弹一条提示）。
+- 改了 `content/passes/`、`content/library/`、`content/effects/` 里的文件不用刷页面：服务通过 SSE 推一条消息，编辑器会自动重载对应的库（顶栏右下角弹一条提示）。
 - 服务只监听 `127.0.0.1`，不对外网开放；零依赖，只用 Node 自带的 `http` / `fs`。
 - 端口被占就换一个：`node server/index.mjs --port 5180`。
 - 注意：服务模式下页面以 `http://127.0.0.1:5177/` 打开，和 `file://` 是两个 origin，浏览器本地存储不互通（这是好事：file:// 的旧工程不会覆盖磁盘上的）。
 
-新增一个 Pass 就是往 `passes/` 里放一个文件，刷新页面就能在选择器「我的」分组里看到：
+新增一个 Pass 就是往 `content/passes/` 里放一个文件，刷新页面就能在选择器「我的」分组里看到：
 
 ```js
-// passes/my-cold-tone.mjs
+// content/passes/my-cold-tone.mjs
 export default {
   name: '冷调压暗',
   group: '我的 Pass',
@@ -86,12 +86,12 @@ void main() {
 
 ## 效果库
 
-`effects/` 目录下的每个文件夹就是一个效果，按 `Ctrl + L` 或顶栏「效果库」打开图库：网格卡片、标签筛选、搜索，卡片缩略图是真实渲染出来的（带透明的地方显示棋盘格）。
+`content/effects/` 目录下的每个文件夹就是一个效果，按 `Ctrl + L` 或顶栏「效果库」打开图库：网格卡片、标签筛选、搜索，卡片缩略图是真实渲染出来的（带透明的地方显示棋盘格）。
 
 ![效果库](docs/library.png)
 
 ```
-effects/
+content/effects/
   slash-arc/
     effect.json          # id / 名字 / 标签 / 时长 / 循环 / 输出尺寸与 alpha
     shaders/sweep.frag   # 每个 Pass 一个文件，可读可 diff
@@ -126,11 +126,11 @@ effects/
 
 ## 公共图库与新建效果
 
-**公共图库**：把要复用的素材图（png / jpg / webp）丢进 `library/`，跑一次 `node tools/lib.mjs build`，它们就会出现在「纹理」页的「公共图库」分组里：
+**公共图库**：把要复用的素材图（png / jpg / webp）丢进 `content/library/`，跑一次 `node tools/lib.mjs build`，它们就会出现在「纹理」页的「公共图库」分组里：
 
 - 点「用作输入」→ 成为首个 Pass 的输入图；点「用作背景」→ 铺在最底层的背景。
 - 效果包的 `inputs` 里写 `"library:wood-1853403"` 就能引用同一张图，构建时不会把图复制进效果目录。
-- 图库图片以 dataURL 内联进 `library/index.js`，所以 `file://` 直接打开也能用；合计超过 6MB 时构建会报错，请压缩后再放。
+- 图库图片以 dataURL 内联进 `content/library/index.js`，所以 `file://` 直接打开也能用；合计超过 6MB 时构建会报错，请压缩后再放。
 
 **新建效果**：入口有两处——效果库面板右上角「＋ 新建效果」、命令面板搜「新建效果」。表单填名称 / id / 标签 / 背景图 / 循环 / 透明（**不填时长**，创建后到时间轴上改，默认 0 即无限时间），创建后得到两个 Pass：
 
@@ -142,7 +142,7 @@ effects/
 做完点「导出效果包 JSON」下载 `<id>.effect.json`，在仓库根目录执行：
 
 ```bash
-node tools/lib.mjs import fx-xxxx.effect.json   # 落到 effects/fx-xxxx/
+node tools/lib.mjs import fx-xxxx.effect.json   # 落到 content/effects/fx-xxxx/
 node tools/lib.mjs build                        # 重建索引
 ```
 
@@ -277,7 +277,7 @@ uniform sampler2D u_tex;   // @label 输入图
 - **中间态**：不读输入、自己生成一张图（21 个「生成」分组），插在选中 Pass **之前**——那个 Pass 的「上一 Pass 输出」随即就是它（左栏会标「中间态」）。
   中间态自己不作为整条管线的最终输出；也可以在任何 Pass 的采样器里选「指定 Pass」直接指到它，当噪声、遮罩或位移图用。
 
-顶栏只有「效果库」一个入口：效果就是 `effects/` 里的那些，切换效果在图库里点卡片；不再有内置整条预设，也不再有效果下拉。
+顶栏只有「效果库」一个入口：效果就是 `content/effects/` 里的那些，切换效果在图库里点卡片；不再有内置整条预设，也不再有效果下拉。
 
 ![插入常见 Pass](docs/passes.png)
 
@@ -304,7 +304,7 @@ uniform sampler2D u_tex;   // @label 输入图
 ## 保存 / 导出 / 素材
 
 - **自动保存**：随便改都会存；顶栏「自动保存」会短暂变绿显示「已保存」。
-  - 有本地服务：写 `project.json`（仓库里能看到的那份），顶栏标签显示「磁盘」。
+  - 有本地服务：写 `.state/project.json`（仓库里能看到的那份），顶栏标签显示「磁盘」。
   - 没有服务（双击打开）：写 IndexedDB，顶栏标签显示「浏览器」。
 - **保存工程 / 打开工程**：导出 JSON（Pass、代码、参数、绑定关系、导入的贴图 dataURL 全在里面），方便存档、对比、发给别人。
 - **导入贴图**：把图片拖进窗口直接粘贴也行；超过 2048 边长会等比缩小，避免显存和体积爆掉。
@@ -352,32 +352,35 @@ uniform sampler2D u_tex;   // @label 输入图
 
 ```
 shaderTest/
-├── index.html          页面骨架（classic script，无构建）
+├── index.html          页面骨架（classic script，无构建；双击即用）
 ├── package.json        只有几个脚本（serve / editor / check / build），没有依赖
-├── project.json        本地服务模式下自动保存的当前管线（.gitignore）
+├── .state/             本地服务的会话状态（.gitignore）
+│   └── project.json    自动保存的当前管线
+├── src/                前端代码
+│   ├── css/styles.css  设计令牌 + 三栏布局 + 全部组件样式
+│   └── js/
+│       ├── util.js         小工具、SVG 图标、toast / modal / popover
+│       ├── server.js       本地服务探测 + API 调用（file:// 下自动降级）
+│       ├── glsl.js         源码组装（补头、Shadertoy 包装、GLSL1 改写）、uniform 注解解析、语法高亮
+│       ├── assets.js       纹理资源（内置 5 张 + 导入 + 公共图库）
+│       ├── engine.js       WebGL2 引擎：编译缓存、多 Pass 渲染、ping-pong、GPU 计时、读像素、截屏
+│       ├── editor.js       代码编辑器（高亮 / 行号 / 错误行 / 缩进 / 快捷键）
+│       ├── uniforms.js     Uniforms 页渲染：参数控件 + 采样器绑定
+│       ├── pipeline.js     左栏 Pass 列表（选中 / 改名 / 拖拽 / 启用停用 / 右键菜单）
+│       ├── passes.js       内置常见 Pass 模板（22 个基础 + 合并 passes-extra.js）
+│       ├── passes-extra.js 扩展模板（53 个原子 Pass，只写 id/name/group/role/desc/code）
+│       ├── store.js        自动保存（.state/project.json / IndexedDB / localStorage）、导入导出
+│       └── app.js          装配：渲染循环、预览交互、编译调度、检查器、快捷键、图库
+├── content/            项目内容（服务可写；file:// 下只读）
+│   ├── passes/         一个文件一个 Pass（「存为 Pass」和手写都落这里）
+│   ├── effects/        效果库（每个子目录一个效果包）
+│   │   ├── <id>/effect.json + shaders/*.frag + input/
+│   │   ├── index.json  构建产物（工具 / AI 读）
+│   │   └── index.js    构建产物（file:// 模式下页面读，走 <script>）
+│   └── library/        公共素材图（png / jpg / webp）+ 构建产物 index.json / index.js
 ├── server/
 │   ├── index.mjs       启动入口（--port / --open，只监听 127.0.0.1）
-│   └── api.mjs         静态托管 + 文件写盘 API（passes / library / effects / doc）
-├── passes/             一个文件一个 Pass（「存为 Pass」和手写都落这里）
-├── css/styles.css      设计令牌 + 三栏布局 + 全部组件样式
-├── js/
-│   ├── util.js         小工具、SVG 图标、toast / modal / popover
-│   ├── server.js       本地服务探测 + API 调用（file:// 下自动降级）
-│   ├── glsl.js         源码组装（补头、Shadertoy 包装、GLSL1 改写）、uniform 注解解析、语法高亮
-│   ├── assets.js       纹理资源（内置 5 张 + 导入）与采样参数
-│   ├── engine.js       WebGL2 引擎：编译缓存、多 Pass 渲染、ping-pong、GPU 计时、读像素、截屏
-│   ├── editor.js       代码编辑器（高亮 / 行号 / 错误行 / 缩进 / 快捷键）
-│   ├── uniforms.js     Uniforms 页渲染：参数控件 + 采样器绑定
-│   ├── pipeline.js     左栏 Pass 列表（选中 / 改名 / 拖拽 / 启用停用 / 右键菜单）
-│   ├── passes.js       内置常见 Pass 模板（22 个基础 + 把 passes-extra.js 合并进来）
-│   ├── passes-extra.js 扩展模板（53 个原子 Pass，只写 id/name/group/role/desc/code）
-│   ├── store.js        自动保存（project.json / IndexedDB / localStorage）、工程导入导出
-│   └── app.js          装配：渲染循环、预览交互、编译调度、检查器、快捷键、图库
-├── effects/            效果库（每个子目录一个效果包）
-│   ├── <id>/effect.json + shaders/*.frag + input/
-│   ├── index.json      构建产物（工具 / AI 读）
-│   └── index.js        构建产物（file:// 模式下页面读，走 <script>）
-├── library/            公共素材图（png / jpg / webp）+ 构建产物 index.json / index.js
+│   └── api.mjs         静态托管 + 文件写盘 API（content/* 与 .state/doc）
 ├── tools/
 │   ├── lib.mjs         扫描 / 校验 / 生成索引（build / check / list / import）
 │   └── new.mjs         新建效果脚手架
@@ -418,7 +421,7 @@ SL.test.pack('my-id', '我的效果');  // 把当前文档打包成效果包对�
 - Shadertoy 兼容层里 `iChannelTime` 恒为 0（没有接播放器/视频解码）；`iChannelResolution` 有按绑定纹理填。
 - 图库缩略图是打开图库时用 176×176 现渲的（4 个效果约 0.3 秒），效果多了以后会换成构建期预生成。
 - 「新建效果」里生成的是**草稿**：还没跑 `import` + `build` 之前它只存在于浏览器本地，顶栏工程名后面会标「（未落盘）」；导出的效果包如果用了自己拖进来的贴图，需要先把它放进 `library/` 再导出（导出面板里会提示）。
-- 「我的 Pass」：启动本地服务后落成 `passes/<id>.mjs`；没启动服务时存 `localStorage`（换机器 / 清缓存会丢）。
+- 「我的 Pass」：启动本地服务后落成 `content/passes/<id>.mjs`；没启动服务时存 `localStorage`（换机器 / 清缓存会丢）。
 - 本地服务没有做权限校验（只监听 127.0.0.1 且不带跨域头），**不要**把端口转发到局域网/公网。
 - 服务模式（`http://127.0.0.1:5177`）和 `file://` 是两个 origin：浏览器本地存储不互通，`file://` 下的旧工程不会自动搬过去（用「保存工程 → 打开工程」搬）。
 - 浏览器实测：Chromium 内核（Chrome / Edge）+ WebGL2 正常；Safari / 移动端未验证。

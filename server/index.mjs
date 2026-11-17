@@ -19,7 +19,7 @@ server.listen(port, host, () => {
   const url = `http://${host}:${port}/`;
   console.log(`ShaderLab  http://${host}:${port}/`);
   console.log(`  根目录  ${ROOT}`);
-  console.log('  passes/  library/  effects/  project.json 都可以直接读写');
+  console.log('  content/passes · content/library · content/effects 都可以直接读写；工程存在 .state/project.json');
   if (has('open')) {
     const cmd = process.platform === 'win32' ? `start "" "${url}"` : process.platform === 'darwin' ? `open "${url}"` : `xdg-open "${url}"`;
     exec(cmd, () => {});

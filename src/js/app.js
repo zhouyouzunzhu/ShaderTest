@@ -89,7 +89,7 @@ window.SL = window.SL || {};
       } catch (e) { /* store 内部已提示 */ }
     }, 700);
 
-    // 先探本地服务：有的话 passes/ library/ effects/ project.json 都以磁盘为准
+    // 先探本地服务：有的话 content/passes/ content/library/ content/effects/ .state/project.json 都以磁盘为准
     SL.server.init().then(function () {
       syncStoreMode();
       // 单个库读失败不该拖垮整个启动：各自降级
@@ -98,7 +98,7 @@ window.SL = window.SL || {};
         reloadEffectIndex().catch(function () { return null; })
       ]);
     }).then(function () {
-      // 服务模式下 library/ 的真实内容要等探测完才读得到，这里补一次
+      // 服务模式下 content/library/ 的真实内容要等探测完才读得到，这里补一次
       return App.assets.ensureLibrary(function () {
         App.needsRender = true;
         if (App.doc && App.doc.ui.tab === 'textures') renderInspector();
@@ -163,9 +163,9 @@ window.SL = window.SL || {};
     }
     if (kinds.passes) {
       SL.passes.sync().then(function () {
-        SL.ui.toast('passes/ 变了，我的 Pass 已更新', 'info');
+        SL.ui.toast('content/passes/ 变了，我的 Pass 已更新', 'info');
       }).catch(function (e) {
-        SL.ui.toast('重载 passes/ 失败：' + (e && e.message ? e.message : e), 'warn');
+        SL.ui.toast('重载 content/passes/ 失败：' + (e && e.message ? e.message : e), 'warn');
       });
     }
     if (kinds.library) {
@@ -282,22 +282,22 @@ window.SL = window.SL || {};
       el.textContent = disk ? '磁盘' : '浏览器';
       el.classList.toggle('disk', disk);
       el.title = disk
-        ? '保存到项目目录：passes/*.mjs 与 project.json（node server/index.mjs）'
+        ? '保存到项目目录：content/passes/*.mjs 与 .state/project.json（node server/index.mjs）'
         : '没有启动本地服务，改动只存在浏览器里；想落盘就跑 node server/index.mjs';
     }
     if (st) {
       st.title = disk
-        ? '改动会自动存进 project.json（本地服务）'
+        ? '改动会自动存进 .state/project.json（本地服务）'
         : '改动只存进浏览器本地（启动本地服务后可落盘）';
     }
   }
 
-  /** 效果库索引（effects/index.js 由 node tools/lib.mjs build 生成） */
+  /** 效果库索引（content/effects/index.js 由 node tools/lib.mjs build 生成） */
   function libraryEffects() {    return (window.SL_EFFECTS && Array.isArray(window.SL_EFFECTS.effects))
       ? window.SL_EFFECTS.effects : [];
   }
 
-  /** 服务模式：把 /api/effects 的结果转成和 effects/index.js 一样的结构（shader 文本内联进 passes） */
+  /** 服务模式：把 /api/effects 的结果转成和 content/effects/index.js 一样的结构（shader 文本内联进 passes） */
   function effectsFromServer(list) {
     return (list || []).map(function (rec) {
       const eff = rec.effect || {};
@@ -311,13 +311,13 @@ window.SL = window.SL || {};
         if (v.indexOf('builtin:') === 0) assets.push({ slot: slot, kind: 'builtin', builtin: v.slice(8) });
         else if (v.indexOf('library:') === 0) assets.push({ slot: slot, kind: 'library', libId: v.slice(8) });
         else if (v.indexOf('data:') === 0) assets.push({ slot: slot, kind: 'file', name: slot, dataURL: v });
-        else assets.push({ slot: slot, kind: 'url', name: slot, url: 'effects/' + rec.id + '/' + v });
+        else assets.push({ slot: slot, kind: 'url', name: slot, url: 'content/effects/' + rec.id + '/' + v });
       });
       return Object.assign({}, eff, { id: rec.id, passes: passes, assets: assets });
     });
   }
 
-  /** 服务模式：重新扫一遍 effects/（新建效果写盘后调用，不用再跑 build） */
+  /** 服务模式：重新扫一遍 content/effects/（新建效果写盘后调用，不用再跑 build） */
   function reloadEffectIndex() {
     if (!(window.SL.server && SL.server.on)) return Promise.resolve(false);
     return SL.server.listEffects().then(function (list) {
@@ -1293,7 +1293,7 @@ window.SL = window.SL || {};
   }
 
   /* ========================================================================
-     五之二、效果库：从 effects/ 的包加载到编辑器
+     五之二、效果库：从 content/effects/ 的包加载到编辑器
      ====================================================================== */
   /** 把效果包解析成一份可用的文档（异步：文件型输入图要先注册成资源） */
   function buildDocFromEffect(eff) {
@@ -1504,7 +1504,7 @@ window.SL = window.SL || {};
     idIn.addEventListener('input', function () { idIn.dataset.touched = '1'; });
 
     body.appendChild(field('名称', nameIn));
-    body.appendChild(field('效果 id', idIn, '会成为目录名：effects/<id>/，只能用 a-z 0-9 和短横线；留空就自动生成'));
+    body.appendChild(field('效果 id', idIn, '会成为目录名：content/effects/<id>/，只能用 a-z 0-9 和短横线；留空就自动生成'));
     body.appendChild(field('标签', tagsIn, '逗号分隔，图库里按标签筛选用'));
     body.appendChild(field('背景图', bgSel, '第一个 Pass 用它铺底，第二个 Pass 在它上面做效果'));
     body.appendChild(field('输出', SL.h('label', { class: 'switch-label' }, alphaCb, SL.h('span', { class: 'sw' }), SL.h('span', { text: '透明背景（alpha）' }))));
@@ -1667,16 +1667,16 @@ window.SL = window.SL || {};
     if (onDisk) {
       body.appendChild(SL.h('p', {
         style: 'margin:0;font-size:12.5px;color:var(--text-2);line-height:1.7',
-        html: '当前连着本地服务，可以直接把这条管线写进 <code>effects/' + id + '/</code>：'
+        html: '当前连着本地服务，可以直接把这条管线写进 <code>content/effects/' + id + '/</code>：'
       }));
-      const saveBtn = SL.h('button', { class: 'btn primary', text: '写入 effects/ 并刷新效果库' });
+      const saveBtn = SL.h('button', { class: 'btn primary', text: '写入 content/effects/ 并刷新效果库' });
       saveBtn.addEventListener('click', function () {
         saveBtn.disabled = true;
         const pack = effectPackFromDoc(id, name);
         SL.server.putEffect(id, pack.effect, pack.shaders).then(function () {
           return reloadEffectIndex();
         }).then(function () {
-          SL.ui.toast('已写入 effects/' + id + '，效果库已更新', 'ok');
+          SL.ui.toast('已写入 content/effects/' + id + '，效果库已更新', 'ok');
           m.close();
           syncEffectCount();
           if (libraryOpen()) {
@@ -1801,7 +1801,7 @@ window.SL = window.SL || {};
     if (!effects.length) {
       grid.appendChild(SL.h('div', {
         class: 'lib-empty',
-        html: '效果库还是空的。<br>在 <code>effects/&lt;id&gt;/</code> 里放 <code>effect.json</code> + <code>shaders/*.frag</code>，' +
+        html: '效果库还是空的。<br>在 <code>content/effects/&lt;id&gt;/</code> 里放 <code>effect.json</code> + <code>shaders/*.frag</code>，' +
           '然后跑 <code>node tools/lib.mjs build</code>，刷新页面就能看到。'
       }));
     } else if (!list.length) {
@@ -3125,7 +3125,7 @@ window.SL = window.SL || {};
     sec.appendChild(selWrap);
     host.appendChild(sec);
 
-    // 资源列表：公共图库（library/ 里的素材）和用户导入的图分开列
+    // 资源列表：公共图库（content/library/ 里的素材）和用户导入的图分开列
     const cardGrid = function (items) {
       const grid = SL.h('div', { class: 'asset-grid' });
       items.forEach(function (a) {
@@ -3172,8 +3172,8 @@ window.SL = window.SL || {};
       title: '公共图库',
       items: App.assets.items.filter(function (a) { return a.kind === 'library'; }),
       note: (window.SL.server && SL.server.on)
-        ? 'library/ 目录里的文件：拖图进来会自动写盘。点缩略图直接当输入图。'
-        : '放在 library/ 里的公共素材（跑过 node tools/lib.mjs build 才有）。点缩略图直接当输入图。'
+        ? 'content/library/ 目录里的文件：拖图进来会自动写盘。点缩略图直接当输入图。'
+        : '放在 content/library/ 里的公共素材（跑过 node tools/lib.mjs build 才有）。点缩略图直接当输入图。'
     }, {
       title: '资源库',
       items: App.assets.items.filter(function (a) { return a.kind !== 'library'; }),
@@ -3228,7 +3228,7 @@ window.SL = window.SL || {};
     if (entry.kind !== 'builtin') {
       wrap.appendChild(SL.h('div', { class: 'ctxmenu-sep' }));
       const isLib = entry.kind === 'library';
-      const del = SL.h('div', { class: 'ctxmenu-item', style: 'color:#ff9caa', text: isLib ? '从 library/ 删掉这个文件' : '删除这张贴图' });
+      const del = SL.h('div', { class: 'ctxmenu-item', style: 'color:#ff9caa', text: isLib ? '从 content/library/ 删掉这个文件' : '删除这张贴图' });
       del.addEventListener('click', function () {
         pop.close();
         const finish = function () {
@@ -3264,7 +3264,7 @@ window.SL = window.SL || {};
     inp.click();
   }
 
-  /** 上传到 library/ 用的文件名：保留扩展名，其余字符收敛到 [a-z0-9._-] */
+  /** 上传到 content/library/ 用的文件名：保留扩展名，其余字符收敛到 [a-z0-9._-] */
   function safeLibName(file) {
     const ext = ((file.name || '').match(/\.[a-z0-9]+$/i) || ['.png'])[0].toLowerCase();
     const raw = String(file.name || 'image');
@@ -3291,7 +3291,7 @@ window.SL = window.SL || {};
       return;
     }
 
-    // 服务模式：拖进来的图直接写进 library/，刷新后仍然是文件，不再是 base64
+    // 服务模式：拖进来的图直接写进 content/library/，刷新后仍然是文件，不再是 base64
     if (window.SL.server && SL.server.on) {
       let names = [];
       let chain = Promise.resolve();
@@ -3308,7 +3308,7 @@ window.SL = window.SL || {};
         App.needsRender = true;
         renderInspector();
         setDirty();
-        SL.ui.toast('已写入 library/：' + names.join('、'), 'ok');
+        SL.ui.toast('已写入 content/library/：' + names.join('、'), 'ok');
       }).catch(function (err) {
         SL.ui.toast('上传失败：' + (err && err.message ? err.message : err), 'bad');
       });
@@ -4058,10 +4058,10 @@ window.SL = window.SL || {};
       '<li><b>指定 Pass / 源图</b>：跨 Pass 取结果（bloom 合成就是这么做的）。</li>',
       '</ul>',
       '<p>再声明一个 <code>uniform vec2 u_texSize;</code> 就能自动拿到所绑定纹理的尺寸。</p>',
-      '<h3>效果库（effects/）</h3>',
+      '<h3>效果库（content/effects/）</h3>',
       '<p>顶栏「效果库」或 <kbd>Ctrl</kbd>+<kbd>L</kbd> 打开。每个效果是一个目录：</p>',
-      '<pre class="codeblock">effects/slash-arc/\n  effect.json      # 名称 / 标签 / 时长 / 是否循环 / 输出尺寸与 alpha\n  shaders/*.frag   # 每个 Pass 一个文件\n  input/*.png      # 可选：这个效果要用的贴图</pre>',
-      '<p>加完效果跑一次 <code>node tools/lib.mjs build</code>（会校验并生成 <code>effects/index.js</code>），刷新页面即可在图库看到；' +
+      '<pre class="codeblock">content/effects/slash-arc/\n  effect.json      # 名称 / 标签 / 时长 / 是否循环 / 输出尺寸与 alpha\n  shaders/*.frag   # 每个 Pass 一个文件\n  input/*.png      # 可选：这个效果要用的贴图</pre>',
+      '<p>加完效果跑一次 <code>node tools/lib.mjs build</code>（会校验并生成 <code>content/effects/index.js</code>），刷新页面即可在图库看到；' +
       '想从头写一个新效果用 <code>node tools/new.mjs 新效果id</code>。</p>',
       '<h3>一次性效果与透明输出</h3>',
       '<p>效果包里写 <code>"loop": false</code> + <code>"duration"</code> 时，预览下方会出现时间轴，拖到任意时刻定格；' +
@@ -4076,7 +4076,7 @@ window.SL = window.SL || {};
       '<li>时间轴右侧的「打帧」按钮（或 <kbd>K</kbd>）把当前 Pass 的所有轨道在这一帧补齐。</li>',
       '</ul>',
       '<h3>公共图库与新建效果</h3>',
-      '<p>素材图放到 <code>library/</code>（png / jpg / webp），跑一次 <code>node tools/lib.mjs build</code> 就会出现在「纹理」页的「公共图库」里，' +
+      '<p>素材图放到 <code>content/library/</code>（png / jpg / webp），跑一次 <code>node tools/lib.mjs build</code> 就会出现在「纹理」页的「公共图库」里，' +
       '可以直接当输入图或背景图用；效果包的 <code>inputs</code> 里写 <code>"library:文件名"</code> 也能引用它。</p>',
       '<p>新建效果：效果库面板右上角「＋ 新建效果」，或在命令面板里搜「新建效果」。' +
       '会得到两个 Pass——<b>p1 背景</b>（铺底图）和 <b>p2 效果</b>（在上一个 Pass 上做效果）；时长不在这里填，' +

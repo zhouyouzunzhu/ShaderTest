@@ -4,7 +4,7 @@
  *
  *   node tools/new.mjs 我的效果id [--name 中文名] [--tags 刀光,道具] [--duration 0.6] [--alpha]
  *
- * 生成 effects/<id>/{effect.json, shaders/main.frag, input/.gitkeep}，
+ * 生成 content/effects/<id>/{effect.json, shaders/main.frag, input/.gitkeep}，
  * 然后跑 `node tools/lib.mjs build` 让图库看到它。
  */
 import { mkdir, writeFile, access } from 'node:fs/promises';
@@ -36,10 +36,10 @@ const tags = (opt('tags', '') || '').split(/[,，]/).map((s) => s.trim()).filter
 const duration = Number(opt('duration', '0'));
 const alpha = argv.includes('--alpha');
 
-const dir = path.join(ROOT, 'effects', id);
+const dir = path.join(ROOT, 'content', 'effects', id);
 try {
   await access(dir);
-  usage(`effects/${id} 已经存在`);
+  usage(`content/effects/${id} 已经存在`);
 } catch {
   /* 不存在，继续 */
 }
@@ -82,8 +82,8 @@ await writeFile(path.join(dir, 'effect.json'), JSON.stringify(effect, null, 2) +
 await writeFile(path.join(dir, 'shaders', 'main.frag'), frag, 'utf8');
 await writeFile(path.join(dir, 'input', '.gitkeep'), '', 'utf8');
 
-console.log(`✓ 已创建 effects/${id}`);
+console.log(`✓ 已创建 content/effects/${id}`);
 console.log('  下一步：');
-console.log(`    1. 编辑 effects/${id}/shaders/main.frag`);
+console.log(`    1. 编辑 content/effects/${id}/shaders/main.frag`);
 console.log('    2. node tools/lib.mjs build');
 console.log('    3. 刷新 index.html 打开图库');

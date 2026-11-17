@@ -1,10 +1,10 @@
-# 效果包格式（effects/）
+# 效果包格式（content/effects/）
 
 ShaderLab 的效果库把一个效果装成一个目录。好处是：**git 能看到、AI 能直接改、构建能校验**，
-不用再去改 `js/presets.js` 里的 JS 字符串。
+不用再去改 `src/js/passes.js` 里的 JS 字符串。
 
 ```
-effects/
+content/effects/
   slash-arc/
     effect.json         # 元信息（必需）
     shaders/sweep.frag  # 每个 Pass 一个文件（可读、可 diff）
@@ -19,7 +19,7 @@ effects/
 
 ```bash
 node tools/new.mjs slash-arc-2 --name "刀光·斜劈" --tags 刀光,一次性 --duration 0.6 --alpha
-# 编辑 effects/slash-arc-2/shaders/main.frag
+# 编辑 content/effects/slash-arc-2/shaders/main.frag
 node tools/lib.mjs build
 ```
 
@@ -61,13 +61,13 @@ node tools/lib.mjs build
 ```json
 "inputs": {
   "sprite": "builtin:sprite",          // 内置图：testcard / checker / noise / gradient / circle / sprite
-  "wood":   "library:wood-1853403",    // 公共图库里的素材（library/ 下图片的文件名，去掉扩展名）
+  "wood":   "library:wood-1853403",    // 公共图库里的素材（content/library/ 下图片的文件名，去掉扩展名）
   "mask":   "input/mask.png"           // 相对效果目录的文件，构建时会转成 dataURL 内联
 }
 ```
 
 贴图在页面里的 id 是 `builtin:<名字>`、`lib:<文件名>` 或导入后的 `a:…`；构建会把内置图与
-`input/` 里的图内联进 `index.json`（`library:` 引用只记名字，图仍在 `library/` 里，不重复占体积），
+`input/` 里的图内联进 `index.json`（`library:` 引用只记名字，图仍在 `content/library/` 里，不重复占体积），
 所以效果目录自包含，复制给别人也能直接跑。用 `library:` 前记得先跑 `node tools/lib.mjs build`
 让图库索引里有这张图。
 
@@ -82,7 +82,7 @@ node tools/lib.mjs build
 | `bindings` | 采样器绑定，键是 uniform 名 |
 | `role` | `filter`（默认，读上一个 Pass）或 `source`（中间态：自己生成、不推进主链，只能被「指定 Pass」采样） |
 
-中间态的用法：把生成类 Pass 写成 `"role": "source"`，后面的 Pass 用 `{"kind":"pass","pass":"p1"}` 采样它，这样主链画面不会被它顶掉。`effects/ui-shatter` 就是一个例子（`panel` 是中间态，`shatter` 采样它）。
+中间态的用法：把生成类 Pass 写成 `"role": "source"`，后面的 Pass 用 `{"kind":"pass","pass":"p1"}` 采样它，这样主链画面不会被它顶掉。`content/effects/ui-shatter` 就是一个例子（`panel` 是中间态，`shatter` 采样它）。
 
 `bindings` 的 `kind`：
 
@@ -148,8 +148,8 @@ void main() {
 node tools/lib.mjs build                            # 校验 + 生成 index.json / index.js
 node tools/lib.mjs check                            # 只校验（CI / 提交前跑）
 node tools/lib.mjs list                             # 列出效果
-node tools/lib.mjs import fx-xxxx.effect.json       # 把页面导出的效果包落到 effects/
+node tools/lib.mjs import fx-xxxx.effect.json       # 把页面导出的效果包落到 content/effects/
 node tools/new.mjs <id>                             # 新建效果脚手架
 ```
 
-`library/` 里放公共素材图，`build` 会一并扫进 `library/index.js`；效果包用 `library:<文件名>` 引用它们。
+`content/library/` 里放公共素材图，`build` 会一并扫进 `content/library/index.js`；效果包用 `library:<文件名>` 引用它们。

@@ -16,8 +16,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const EFFECTS_DIR = path.join(ROOT, 'effects');
-const LIBRARY_DIR = path.join(ROOT, 'library');
+const EFFECTS_DIR = path.join(ROOT, 'content', 'effects');
+const LIBRARY_DIR = path.join(ROOT, 'content', 'library');
 const OUT_JSON = path.join(EFFECTS_DIR, 'index.json');
 const OUT_JS = path.join(EFFECTS_DIR, 'index.js');
 const OUT_LIB_JS = path.join(LIBRARY_DIR, 'index.js');

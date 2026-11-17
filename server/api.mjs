@@ -6,7 +6,7 @@
 import { createServer } from 'node:http';
 import { readFile, writeFile, readdir, mkdir, unlink, rename, stat } from 'node:fs/promises';
 import { existsSync, watch } from 'node:fs';
-import { extname, join, normalize, resolve, sep } from 'node:path';
+import { dirname, extname, join, normalize, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 const ROOT = resolve(new URL('..', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1'));
@@ -29,10 +29,15 @@ const MIME = {
   '.ico': 'image/x-icon'
 };
 
-const PASSES_DIR = join(ROOT, 'passes');
-const LIB_DIR = join(ROOT, 'library');
-const EFFECTS_DIR = join(ROOT, 'effects');
-const DOC_FILE = join(ROOT, 'project.json');
+const CONTENT_DIR = join(ROOT, 'content');
+const PASSES_DIR = join(CONTENT_DIR, 'passes');
+const LIB_DIR = join(CONTENT_DIR, 'library');
+const EFFECTS_DIR = join(CONTENT_DIR, 'effects');
+const STATE_DIR = join(ROOT, '.state');
+const DOC_FILE = join(STATE_DIR, 'project.json');
+// 对外暴露的相对前缀：静态托管以 ROOT 为根，所以 content/ 也要带在 URL 里
+const LIB_URL = 'content/library/';
+const EFFECTS_URL = 'content/effects/';
 
 const PASS_ID = /^[a-z0-9][a-z0-9-]{0,63}$/;
 
@@ -118,6 +123,7 @@ async function readJSON(req, limit) {
 }
 
 async function writeAtomic(file, data) {
+  await ensureDir(dirname(file));
   const tmp = file + '.tmp-' + process.pid;
   await writeFile(tmp, data);
   await rename(tmp, file);
@@ -200,7 +206,7 @@ async function listLibrary() {
   const out = [];
   for (const f of files) {
     const st = await stat(join(LIB_DIR, f));
-    out.push({ file: f, url: 'library/' + encodeURIComponent(f), bytes: st.size, mtime: st.mtimeMs });
+    out.push({ file: f, url: LIB_URL + encodeURIComponent(f), bytes: st.size, mtime: st.mtimeMs });
   }
   out.sort((a, b) => a.file.localeCompare(b.file));
   return out;
@@ -220,7 +226,7 @@ async function listEffects() {
       const shaders = {};
       for (const p of raw.passes || []) {
         if (!p || !p.shader) continue;
-        const target = safeJoin(join('effects', d.name, p.shader));
+        const target = safeJoin(join('content', 'effects', d.name, p.shader));
         if (target && existsSync(target)) shaders[p.shader] = await readFile(target, 'utf8');
       }
       out.push({ id: d.name, effect: raw, shaders });
@@ -276,7 +282,7 @@ export function createApi() {
         if (!meta) return sendJSON(res, 400, { error: '缺少 code' });
         await ensureDir(PASSES_DIR);
         await writeAtomic(file, passToSource(meta));
-        return sendJSON(res, 200, { ok: true, file: 'passes/' + id + '.mjs' });
+        return sendJSON(res, 200, { ok: true, file: 'content/passes/' + id + '.mjs' });
       }
       if (method === 'DELETE') {
         if (!existsSync(file)) return sendJSON(res, 404, { error: '没有这个 Pass' });
@@ -293,7 +299,7 @@ export function createApi() {
       const buf = await readBody(req, 32 * 1024 * 1024);
       await ensureDir(LIB_DIR);
       await writeAtomic(join(LIB_DIR, name), buf);
-      return sendJSON(res, 200, { ok: true, url: 'library/' + encodeURIComponent(name) });
+      return sendJSON(res, 200, { ok: true, url: LIB_URL + encodeURIComponent(name) });
     }
     const mLib = p.match(/^\/library\/([^/]+)$/);
     if (mLib && method === 'DELETE') {
@@ -316,7 +322,7 @@ export function createApi() {
       const dir = join(EFFECTS_DIR, id);
       await ensureDir(join(dir, 'shaders'));
       for (const [rel, text] of Object.entries(body.shaders || {})) {
-        const target = safeJoin(join('effects', id, rel));
+        const target = safeJoin(join('content', 'effects', id, rel));
         if (!target) return sendJSON(res, 400, { error: 'shader 路径越界: ' + rel });
         await writeAtomic(target, String(text));
       }

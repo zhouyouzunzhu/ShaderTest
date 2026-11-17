@@ -237,7 +237,7 @@ window.SL = window.SL || {};
      * 公共图库：条目 id 稳定为 lib:<文件名 kebab>，图片异步解码，
      * 因此解码完要把 version 加一，让下一次 getTexture 重新上传。
      *
-     * 有本地服务时直接读 library/ 里的真实文件（URL，不再走 base64）；
+     * 有本地服务时直接读 content/library/ 里的真实文件（URL，不再走 base64）；
      * 双击打开（file://）时退回 tools/lib.mjs build 出来的 window.SL_LIBRARY。
      */
     ensureLibrary(onLoaded) {
@@ -261,7 +261,7 @@ window.SL = window.SL || {};
             if (e.kind === 'library' && !alive[e.id]) self.remove(e.id);
           });
         }).catch(function (e) {
-          if (window.SL.ui && SL.ui.toast) SL.ui.toast('读取 library/ 失败：' + e.message, 'warn');
+          if (window.SL.ui && SL.ui.toast) SL.ui.toast('读取 content/library/ 失败：' + e.message, 'warn');
         });
       }
 
